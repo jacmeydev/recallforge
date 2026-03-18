@@ -1,0 +1,13 @@
+node_modules
+.next
+.git
+data
+*.db
+*.db-wal
+*.db-shm
+data/backups
+.env.local
+.env
+.vscode
+AUDITORIA_TECNICA.txt
+LIBRARY_DECISIONS.md

@@ -1,0 +1,51 @@
+{
+  "name": "RecallForge",
+  "short_name": "RecallForge",
+  "description": "Sistema profesional de repetición espaciada con FSRS-5",
+  "start_url": "/dashboard",
+  "display": "standalone",
+  "background_color": "#0a0a0a",
+  "theme_color": "#6d28d9",
+  "orientation": "any",
+  "lang": "es",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["education", "productivity"],
+  "screenshots": [],
+  "prefer_related_applications": false,
+  "shortcuts": [
+    {
+      "name": "Estudiar",
+      "short_name": "Estudiar",
+      "description": "Comenzar sesión de estudio",
+      "url": "/dashboard",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Agregar Nota",
+      "short_name": "Agregar",
+      "description": "Crear una nueva nota",
+      "url": "/notes/add",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Rescate Rápido",
+      "short_name": "Rescate",
+      "description": "Sesión rápida para días difíciles",
+      "url": "/rescue",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}

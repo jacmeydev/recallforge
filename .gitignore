@@ -1,0 +1,54 @@
+# Dependencies
+node_modules/
+
+# Next.js build outputs
+.next/
+out/
+
+# Local env files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Coverage / test artifacts
+coverage/
+playwright-report/
+test-results/
+
+# Runtime / temp
+tmp/
+.tmp/
+
+# Local data
+/data/*.db
+/data/*.db-*
+/data/*.sqlite
+/data/*.sqlite3
+/data/backups/
+/data/https/
+
+# Certificates and private keys
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Docker local overrides
+.docker/
