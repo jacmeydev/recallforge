@@ -28,7 +28,7 @@ Thumbs.db
 *.tsbuildinfo
 
 # Coverage / test artifacts
-coverage/
+/coverage/
 playwright-report/
 test-results/
 
