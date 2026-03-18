@@ -1,20 +1,20 @@
 # RecallForge
 
-RecallForge es una app de estudio tipo Anki, local-first y orientada a medicina.
+RecallForge es una app de estudio tipo Anki, local-first y adaptable a cualquier dominio de aprendizaje.
 
 Hoy ya incluye:
 - FSRS real para scheduling diario
 - Dexie/IndexedDB en cliente + SQLite en servidor
 - sync idempotente con replay determinista de `review_logs`
-- estudio por mazos y por metadata académica profunda
+- estudio por mazos y por metadata curricular
 - importación IA, drafts con revisión humana y receiver para OpenClaw
-- Copilot, coverage/risk académico, image occlusion y optimizador FSRS
+- Copilot, análisis de cobertura/riesgo, image occlusion y optimizador FSRS
 
 ## Estado actual
 
 - lista para `beta privada`
 - `typecheck`, `lint`, `test`, `build`, `db:rehearse` y `test:e2e` pasan
-- Docker build y health de producción pasan
+- despliegue validado tanto en modo Node.js como con Docker
 - HTTPS tailnet validado con Tailscale Serve
 
 ## Stack real
@@ -48,7 +48,7 @@ npm run db:rehearse
 
 App local:
 - desarrollo: `http://localhost:3030`
-- producción local Docker: `http://localhost:3030`
+- producción local: `http://localhost:3030`
 
 ## Levantar en desarrollo
 
@@ -114,8 +114,13 @@ npm test
 npm run build
 npm run db:rehearse
 npm run test:e2e
-docker build -t recallforge:local .
 curl http://127.0.0.1:3030/api/health
+```
+
+Opcional si eliges contenedor:
+
+```bash
+docker build -t recallforge:local .
 ```
 
 ## Producción rápida con Docker
@@ -153,6 +158,6 @@ La situación real es:
 - `no` está cerrada como producto final absoluto
 
 Riesgos aceptados post-beta:
-- la inteligencia académica depende de buenos `curriculum_links`
+- la calidad de recomendaciones depende de buenos `curriculum_links`
 - falta soak largo multi-dispositivo
 - la observabilidad es útil, pero todavía mínima

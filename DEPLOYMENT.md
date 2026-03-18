@@ -5,7 +5,7 @@
 Este documento describe el despliegue recomendado para `beta privada`.
 
 Estado validado en esta pasada:
-- `docker build` pasa
+- `docker build` pasa (si eliges contenedores)
 - contenedor de producción responde `200` en `/api/health`
 - Tailscale Serve apunta correctamente a `3030`
 - `typecheck`, `lint`, `test`, `build`, `db:rehearse` y `test:e2e` pasan
@@ -28,15 +28,37 @@ RATE_LIMIT_API_MAX=120
 LOG_LEVEL=info
 ```
 
-## Despliegue recomendado: Docker
+## Opciones de despliegue
 
-### 1. Construir imagen
+Puedes elegir el método que prefieras:
+- Node.js directo en host (sin Docker)
+- Docker
+
+### Opción A: Node.js directo (sin Docker)
+
+```bash
+npm ci
+npm run build
+npm run start
+```
+
+Health check:
+
+```bash
+curl http://127.0.0.1:3030/api/health
+```
+
+Para producción, usa un process manager (por ejemplo `systemd`, `pm2` o equivalente).
+
+### Opción B: Docker
+
+#### 1. Construir imagen
 
 ```bash
 docker build -t recallforge:local .
 ```
 
-### 2. Levantar contenedor
+#### 2. Levantar contenedor
 
 Si vas a montar la carpeta `data` del host, usa el UID/GID del usuario real para evitar SQLite readonly:
 
@@ -55,7 +77,7 @@ docker run -d \
   recallforge:local
 ```
 
-### 3. Verificar health
+#### 3. Verificar health
 
 ```bash
 curl http://127.0.0.1:3030/api/health
@@ -110,6 +132,11 @@ npm test
 npm run build
 npm run db:rehearse
 npm run test:e2e
+```
+
+Si eliges Docker, añade:
+
+```bash
 docker build -t recallforge:local .
 ```
 
@@ -166,4 +193,4 @@ No bloquean el deploy actual, pero siguen abiertos:
 
 ## Veredicto
 
-RecallForge queda `lista para beta privada` con despliegue controlado por Docker + HTTPS.
+RecallForge queda `lista para beta privada` con despliegue flexible (Node.js directo o Docker) + HTTPS.
