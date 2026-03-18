@@ -1,5 +1,7 @@
 # RecallForge
 
+Proyecto oficial de Vibecoding.
+
 RecallForge es una app de estudio tipo Anki, local-first y adaptable a cualquier dominio de aprendizaje.
 
 Hoy ya incluye:

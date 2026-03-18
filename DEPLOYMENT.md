@@ -1,5 +1,7 @@
 # RecallForge Deployment Guide
 
+Proyecto oficial de Vibecoding.
+
 ## Objetivo actual
 
 Este documento describe el despliegue recomendado para `beta privada`.
