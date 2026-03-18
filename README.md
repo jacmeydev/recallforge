@@ -149,17 +149,3 @@ Health check:
 ```bash
 curl http://127.0.0.1:3030/api/health
 ```
-
-## Estado de madurez
-
-RecallForge ya no está en fase de “prototipo”.
-La situación real es:
-
-- `sí` está lista para beta privada
-- `sí` está lista para integrarse de forma controlada con UniBot/OpenClaw
-- `no` está cerrada como producto final absoluto
-
-Riesgos aceptados post-beta:
-- la calidad de recomendaciones depende de buenos `curriculum_links`
-- falta soak largo multi-dispositivo
-- la observabilidad es útil, pero todavía mínima
