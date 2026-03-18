@@ -1,8 +1,9 @@
 # RecallForge
 
-Proyecto oficial de Vibecoding.
+Proyecto Vibecoding.
 
 RecallForge es una app de estudio tipo Anki, local-first y adaptable a cualquier dominio de aprendizaje.
+<img width="1359" height="722" alt="image" src="https://github.com/user-attachments/assets/1e1e6f1e-e70b-43a9-a8fe-7d7caf7f5c59" />
 
 Hoy ya incluye:
 - FSRS real para scheduling diario
@@ -10,7 +11,7 @@ Hoy ya incluye:
 - sync idempotente con replay determinista de `review_logs`
 - estudio por mazos y por metadata curricular
 - importación IA, drafts con revisión humana y receiver para OpenClaw
-- Copilot, análisis de cobertura/riesgo, image occlusion y optimizador FSRS
+- análisis de cobertura/riesgo, image occlusion y optimizador FSRS
 
 ## Estado actual
 
@@ -91,11 +92,11 @@ RecallForge ya expone rutas listas para agentes:
   - `/api/openclaw/review-candidates`
   - `/api/openclaw/improvement-drafts`
 
-## OpenClaw / UniBot
+## OpenClaw
 
 Flujos ya soportados:
 - recibir drafts generados desde imágenes o capítulos
-- dejar esos drafts en Copilot para revisión humana
+- dejar  drafts  para revisión humana
 - aprobarlos e importarlos a la colección final
 - leer coverage, risk, scopes, academic summary y study plan
 - proponer mejoras sobre tarjetas ya existentes
