@@ -95,7 +95,7 @@ También puedes pedirle:
 
 ## Instalación
 
-Requisitos: [Node.js](https://nodejs.org) 22 o superior (20 funciona, salvo los `.apkg` del formato comprimido más reciente de Anki).
+Requisitos: [Node.js](https://nodejs.org) 20 o superior.
 
 ```bash
 git clone https://github.com/jacmeydev/recallforge.git

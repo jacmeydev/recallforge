@@ -18,6 +18,7 @@ import zlib from 'zlib';
 import Database from 'better-sqlite3';
 import JSZip from 'jszip';
 import yauzl from 'yauzl';
+import { decompress as fzstdDecompress } from 'fzstd';
 import { normalizeTags } from './cards';
 import { clozeOrdinals } from './cloze';
 import { genId, getDb } from './db';
@@ -70,10 +71,10 @@ function openZip(file: string): Promise<ZipReader> {
   });
 }
 
+/** zstd (Anki's current package format): Node's native codec when available, a pure JS decoder otherwise. */
 function zstd(data: Buffer): Buffer {
-  const decompress = (zlib as unknown as { zstdDecompressSync?: (b: Buffer) => Buffer }).zstdDecompressSync;
-  if (!decompress) throw badRequest('This Anki package uses the new compressed format: update Node.js to 22.15 or newer, or export from Anki with "Support older Anki versions" checked');
-  return decompress(data);
+  const native = (zlib as unknown as { zstdDecompressSync?: (b: Buffer) => Buffer }).zstdDecompressSync;
+  return native ? native(data) : Buffer.from(fzstdDecompress(new Uint8Array(data)));
 }
 
 // ---------------------------------------------------------------------------
