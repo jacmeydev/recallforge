@@ -10,6 +10,7 @@
 
 import type Database from 'better-sqlite3';
 import { getApiKeyPreview, hashApiKey } from '@/lib/server/api-keys';
+import { htmlToText } from './text';
 
 type DB = Database.Database;
 
@@ -267,22 +268,6 @@ function parseJson<T>(raw: string | null | undefined, fallback: T): T {
   } catch {
     return fallback;
   }
-}
-
-export function htmlToText(html: string): string {
-  return html
-    .replace(/<\s*br\s*\/?>/gi, '\n')
-    .replace(/<\/(div|p|li|h[1-6]|tr)>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&amp;/g, '&')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
 }
 
 function renderTemplate(template: string, fields: Record<string, string>): string {

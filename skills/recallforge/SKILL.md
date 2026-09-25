@@ -1,6 +1,6 @@
 ---
 name: recallforge
-description: Run active-recall study sessions and create flashcards in the learner's RecallForge spaced-repetition memory (FSRS). Use when the learner wants to be quizzed, review what is due, turn notes/chapters/lectures into flashcards, check study progress, or fix existing cards.
+description: Run active-recall study sessions and create high-quality flashcards in the learner's RecallForge spaced-repetition memory (FSRS). Use when the learner wants to be quizzed, review what is due, turn a PDF, slides, notes or any document into flashcards, organize subjects, check study progress, or fix existing cards.
 ---
 
 # RecallForge
@@ -66,13 +66,34 @@ One question per message. If the learner disputes a grade, grade the card again 
 - Up to 500 cards per request; decks are created automatically; a front that already exists in the same deck is skipped and reported in `skipped`.
 - Before a large batch, show the learner the proposed cards unless they asked you to add them directly. Search first to avoid near-duplicates: `rf "$RECALLFORGE_URL/api/v1/cards?query=paracetamol"`.
 
+## From a document (PDF, slides, notes)
+
+1. Store it. If you read the file yourself, send the text; otherwise upload the file:
+   `rf -X POST "$RECALLFORGE_URL/api/v1/documents" -d '{"title":"Guyton cap. 9","deck":"Medicina::Fisiología","text":"..."}'`
+   `curl -sS -H "Authorization: Bearer $RECALLFORGE_API_KEY" -F file=@clase3.pdf -F deck="Medicina::Fisiología" "$RECALLFORGE_URL/api/v1/documents"`
+   The learner can also upload it in the web app (*Documentos*); find it with `GET /api/v1/documents`.
+2. Read it part by part (pages, slides or sections, each with how many cards it already has):
+   `rf "$RECALLFORGE_URL/api/v1/documents/ID/read?fromPart=0"` → follow `nextPart` until it is `null`.
+3. Create the cards as drafts linked to their part (source and deck are filled from the document):
+   `rf -X POST "$RECALLFORGE_URL/api/v1/cards" -d '{"documentId":"ID","draft":true,"cards":[{"front":"...","back":"...","documentPart":0}]}'`
+   Fix anything listed in the response `warnings` with `PATCH /api/v1/cards/{id}`.
+4. Summarise what you created per section and let the learner review. Approve with
+   `rf -X POST "$RECALLFORGE_URL/api/v1/cards/approve" -d '{"documentId":"ID"}'` (or specific `ids`); reject with `DELETE /api/v1/cards/{id}`.
+
+Never invent facts: every card must be supported by the material. Skip parts that are already covered unless asked.
+
+## Organization
+
+- Decks are subject paths: `Medicina::Farmacología::Antibióticos`. Missing levels are created automatically, and filtering by a deck includes its subdecks. Check `GET /api/v1/decks` and reuse existing subjects before creating new ones.
+- Tags are for cross-cutting topics (`alto-rendimiento`, `parcial-2`).
+
 ## Other useful calls
 
 | Need | Call |
 |---|---|
 | Progress, due counts, weakest cards | `GET /api/v1/stats?deck=&tag=` |
 | List decks with counts | `GET /api/v1/decks` |
-| Find cards | `GET /api/v1/cards?query=&deck=&tag=&state=new\|learning\|review\|due\|leech\|suspended` |
+| Find cards | `GET /api/v1/cards?query=&deck=&tag=&documentId=&state=new\|learning\|review\|due\|leech\|suspended\|draft` |
 | Fix or move a card | `PATCH /api/v1/cards/{id}` with any of `front, back, explanation, source, tags, deck, suspended` |
 | Delete a card (confirm first) | `DELETE /api/v1/cards/{id}` |
 | More new cards today, exam mode | `PATCH /api/v1/settings` with `newCardsPerDay`, `maxReviewsPerDay`, `desiredRetention` |

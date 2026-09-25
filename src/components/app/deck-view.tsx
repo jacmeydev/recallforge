@@ -147,7 +147,7 @@ export function DeckView({ deckId }: { deckId: string }) {
     });
 
   const renameDeck = () => {
-    const name = prompt('Nuevo nombre del mazo', deck?.name);
+    const name = prompt('Nuevo nombre o ruta (usa :: para moverlo dentro de otra materia)', deck?.name);
     if (!name?.trim()) return;
     void run(async () => {
       await api(`/api/v1/decks/${encodeURIComponent(deckId)}`, { method: 'PATCH', body: { name } });
@@ -156,7 +156,7 @@ export function DeckView({ deckId }: { deckId: string }) {
   };
 
   const removeDeck = () =>
-    confirm(`¿Eliminar el mazo "${deck?.name}" con sus ${deck?.counts.total ?? 0} tarjetas? No se puede deshacer.`) &&
+    confirm(`¿Eliminar "${deck?.name}", sus submaterias y sus ${deck?.totals.total ?? 0} tarjetas? No se puede deshacer.`) &&
     run(async () => {
       await api(`/api/v1/decks/${encodeURIComponent(deckId)}`, { method: 'DELETE' });
       router.push('/');
@@ -172,8 +172,16 @@ export function DeckView({ deckId }: { deckId: string }) {
           <h1 className="text-2xl font-bold">{deck?.name ?? '…'}</h1>
           {deck && (
             <p className="text-sm text-muted-foreground">
-              {deck.counts.total} tarjetas · {deck.counts.new} nuevas · {deck.counts.due} pendientes hoy
-              {deck.counts.suspended > 0 && ` · ${deck.counts.suspended} suspendidas`}
+              {deck.totals.total} tarjetas · {deck.totals.new} nuevas · {deck.totals.due} pendientes hoy
+              {deck.totals.suspended > 0 && ` · ${deck.totals.suspended} suspendidas`}
+              {deck.totals.drafts > 0 && (
+                <>
+                  {' '}·{' '}
+                  <Link href={`/drafts?deck=${encodeURIComponent(deckId)}`} className="text-amber-600 hover:underline">
+                    {deck.totals.drafts} por revisar
+                  </Link>
+                </>
+              )}
             </p>
           )}
         </div>

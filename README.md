@@ -16,6 +16,8 @@ Funciona con cualquier agente: Claude, ChatGPT, Cursor, VS Code, OpenClaw o un s
 - [Así se ve una sesión](#así-se-ve-una-sesión)
 - [Instalación](#instalación)
 - [Conectar tu agente](#conectar-tu-agente)
+- [De tus documentos a tarjetas](#de-tus-documentos-a-tarjetas)
+- [Organización por materias](#organización-por-materias)
 - [Qué puede hacer el agente](#qué-puede-hacer-el-agente)
 - [API REST](#api-rest)
 - [Cómo decide qué preguntarte](#cómo-decide-qué-preguntarte)
@@ -140,6 +142,45 @@ Necesitan una URL **HTTPS pública**. Consulta [DEPLOYMENT.md](DEPLOYMENT.md) pa
 
 Usa la [API REST](#api-rest). La skill [`skills/recallforge/SKILL.md`](skills/recallforge/SKILL.md) enseña a cualquier agente compatible con `SKILL.md` (OpenClaw, Claude Code…) el protocolo de estudio y las llamadas con `curl`.
 
+## De tus documentos a tarjetas
+
+Pásale a tu agente cualquier material de estudio: PDF, Word (`.docx`), PowerPoint (`.pptx`), texto, Markdown, HTML o CSV.
+
+1. **Súbelo** en la web (*Documentos*) o dáselo directamente al agente. Si el agente sabe leer archivos con sus propias habilidades, él mismo lo guarda con `add_document`.
+2. RecallForge lo divide en **partes** (páginas del PDF, diapositivas con sus notas del orador, secciones por título) y te da un mensaje listo para copiar al agente.
+3. El agente lee el documento parte por parte (`read_document`) y crea tarjetas siguiendo las reglas de calidad. Cada tarjeta queda **enlazada a su página** y la fuente se rellena sola («Guyton cap. 9, p. 112»).
+4. Las tarjetas generadas entran como **borradores**. Las revisas en *Por revisar* (o en el chat con el agente), corriges lo necesario y las apruebas. Solo entonces empiezan a salir en tus repasos.
+5. En la ficha del documento ves qué páginas ya tienen tarjetas y cuáles no, para que el agente complete lo que falta.
+
+**Control de calidad automático.** Cada tarjeta nueva se revisa y, si hace falta, se avisa de:
+- preguntas de sí/no;
+- preguntas que ya contienen la respuesta;
+- respuestas que son listas largas;
+- preguntas o respuestas demasiado largas.
+
+El agente recibe esos avisos para corregirlos, y tú los ves al revisar.
+
+RecallForge no usa ninguna IA propia ni necesita claves de pago: el trabajo inteligente lo hace **tu** agente, y RecallForge aporta la estructura, la memoria y el control de calidad. Los PDF escaneados sin texto no se pueden extraer; en ese caso el agente puede leerlos con visión y pasar el texto.
+
+## Organización por materias
+
+Las materias son jerárquicas, con `::` como separador, igual que en Anki:
+
+```
+Medicina
+├── Anatomía
+│   └── Miembro superior
+└── Farmacología
+    ├── Antibióticos
+    └── Cardiovascular
+```
+
+- Al crear `Medicina::Farmacología::Antibióticos` se crean solas las materias superiores que falten.
+- Cada materia muestra sus tarjetas propias y los **totales con todas sus submaterias** (nuevas, pendientes, por revisar).
+- Estudiar o buscar en `Medicina::Farmacología` incluye todas sus submaterias.
+- Renombrar o mover una materia (`Farmacología` → `Medicina::Farmacología`) arrastra sus submaterias; borrarla borra todo el subárbol.
+- Las **etiquetas** sirven para temas transversales (`alto-rendimiento`, `parcial-2`, `cardio::arritmias`).
+
 ## Qué puede hacer el agente
 
 Al conectarse por MCP, el agente recibe automáticamente las **instrucciones del protocolo de estudio**: preguntar sin dar pistas, esperar tu intento, evaluar el significado y no las palabras exactas, y cómo calificar.
@@ -150,11 +191,16 @@ Al conectarse por MCP, el agente recibe automáticamente las **instrucciones del
 | `reveal_answer` | Da la respuesta, la explicación, la fuente, tus intentos anteriores y cuándo volvería la tarjeta con cada calificación. |
 | `grade_card` | Registra cómo recordaste (`again`, `hard`, `good`, `easy`) junto con tu respuesta, y devuelve la siguiente pregunta. |
 | `get_stats` | Progreso de hoy, pendientes, retención real de 30 días, racha, previsión de 7 días y tus tarjetas más difíciles. |
-| `add_cards` | Crea hasta 500 tarjetas de una vez. Crea los mazos que falten y se salta los duplicados. |
-| `search_cards` | Busca por texto, mazo, etiqueta o estado (`new`, `due`, `leech`…). |
+| `add_cards` | Crea hasta 500 tarjetas de una vez, opcionalmente como borradores y enlazadas a un documento. Crea las materias que falten, se salta los duplicados y devuelve avisos de calidad. |
+| `approve_cards` | Aprueba borradores (por id, por documento o por materia) para que entren en los repasos. |
+| `add_document` | Guarda material de estudio: texto o el archivo en base64 (PDF, DOCX, PPTX…). |
+| `list_documents` | Documentos con su materia, número de partes, partes ya cubiertas y borradores pendientes. |
+| `read_document` | Lee un documento parte por parte (página, diapositiva o sección), con cuántas tarjetas tiene cada parte. |
+| `delete_document` | Borra un documento; sus tarjetas se conservan salvo que se pida lo contrario. |
+| `search_cards` | Busca por texto, materia (con submaterias), etiqueta, documento o estado (`new`, `due`, `leech`, `draft`…). |
 | `update_card` | Corrige, reetiqueta, mueve o suspende una tarjeta sin perder su progreso. |
 | `delete_cards` | Borra tarjetas. |
-| `list_decks`, `update_deck`, `delete_deck` | Gestión de mazos. |
+| `list_decks`, `update_deck`, `delete_deck` | Árbol de materias con totales; renombrar, mover o borrar materias. |
 | `update_settings` | Cambia nuevas por día, repasos por día, retención objetivo o zona horaria. |
 
 También incluye dos *prompts*, que en muchos clientes aparecen como comandos: `study` (empezar una sesión) y `make_cards` (convertir material en tarjetas).
@@ -171,9 +217,13 @@ Todas las rutas usan `Authorization: Bearer rf_…`; también se acepta la cabec
 | GET | `/api/v1/stats?deck=&tag=` | Estadísticas |
 | GET, POST | `/api/v1/decks` | Listar o crear mazos |
 | GET, PATCH, DELETE | `/api/v1/decks/{id o nombre}` | Ver, renombrar o borrar un mazo |
-| GET, POST | `/api/v1/cards` | Buscar (`query, deck, tag, state, limit, offset`) o crear en lote |
+| GET, POST | `/api/v1/cards` | Buscar (`query, deck, tag, documentId, state, limit, offset`) o crear en lote (`deck?, documentId?, draft?, cards[]`) |
 | GET, PATCH, DELETE | `/api/v1/cards/{id}` | Ver, editar o borrar una tarjeta |
 | POST | `/api/v1/cards/{id}/reset` | Reiniciar el progreso de una tarjeta |
+| POST | `/api/v1/cards/approve` | `{ ids? , documentId?, deck? }` → aprobar borradores |
+| GET, POST | `/api/v1/documents` | Listar documentos / subir uno (`multipart` con `file`, `deck?`, `title?`, o JSON `{ title, text, deck? }`) |
+| GET, PATCH, DELETE | `/api/v1/documents/{id}` | Índice con cobertura por parte / renombrar / borrar (`?deleteCards=true`) |
+| GET | `/api/v1/documents/{id}/read?fromPart=&maxChars=` | Texto de las partes siguientes |
 | GET, PATCH | `/api/v1/settings` | Ajustes de estudio |
 | GET | `/api/v1/export` | Exportar todos tus datos en JSON |
 
@@ -209,7 +259,8 @@ El agente ya sigue estas reglas, pero sirven también si las haces a mano:
 - **Una idea por tarjeta**, con una sola respuesta posible.
 - Preguntas que obliguen a recordar («¿por qué…?», «¿qué…?», «¿cuál…?») mejor que preguntas de sí o no.
 - **`back`**: la respuesta corta. **`explanation`**: el contexto, la mnemotecnia o la relevancia clínica. **`source`**: libro, capítulo o página.
-- **Un mazo por materia** (Farmacología, Anatomía…) y **etiquetas** para los temas. Las etiquetas pueden ser jerárquicas: `cardio::arritmias` aparece al filtrar por `cardio`.
+- **Nada inventado**: cada tarjeta debe estar respaldada por el material. Si algo no está claro en la fuente, se omite.
+- Una **materia** jerárquica por asignatura y tema (`Medicina::Farmacología::Antibióticos`) y **etiquetas** para temas transversales. Las etiquetas también pueden ser jerárquicas: `cardio::arritmias` aparece al filtrar por `cardio`.
 
 ## Configuración
 
@@ -259,7 +310,8 @@ Tecnologías: Next.js 16, React 19, TypeScript, SQLite (better-sqlite3), ts-fsrs
 ## Hoja de ruta
 
 - Importar mazos de Anki (`.apkg`) y CSV.
-- Imágenes en las tarjetas (anatomía, histología, radiología).
+- Imágenes en las tarjetas (anatomía, histología, radiología) y extracción de imágenes de los PDF.
+- OCR para PDF escaneados.
 - Optimizar FSRS con tu propio historial.
 - Tarjetas cloze nativas.
 - OAuth para conectores MCP que lo exigen.

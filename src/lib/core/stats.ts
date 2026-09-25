@@ -7,7 +7,7 @@
 
 import { getDb } from './db';
 import { tagFilterSql, toCard } from './cards';
-import { resolveDeck } from './decks';
+import { deckScopeSql } from './decks';
 import { badRequest } from './errors';
 import { getSettings } from './settings';
 import { nextCard, StudyFilterSchema } from './study';
@@ -29,7 +29,16 @@ export interface Stats {
     minutes: number;
   };
   due: QueueCounts;
-  cards: { total: number; new: number; learning: number; review: number; mature: number; suspended: number };
+  cards: {
+    total: number;
+    new: number;
+    learning: number;
+    review: number;
+    mature: number;
+    suspended: number;
+    /** AI-generated cards waiting for the learner's approval. */
+    drafts: number;
+  };
   /** Pass rate on review-state cards over the last 30 days (true retention). */
   retention30d: { reviews: number; rate: number | null };
   streakDays: number;
@@ -54,11 +63,12 @@ export function getStats(userId: string, filterInput: unknown = {}, now = new Da
   const db = getDb();
   const today = studyDay(now, settings.timezone, settings.dayStartHour);
 
-  const where = ['c.user_id = @userId'];
+  const where = ['c.user_id = @userId', `c.status = 'active'`];
   const params: Record<string, unknown> = { userId, now: now.toISOString() };
   if (filter.deck) {
-    where.push('c.deck_id = @deckId');
-    params.deckId = resolveDeck(userId, filter.deck).id;
+    const scope = deckScopeSql(userId, filter.deck);
+    where.push(scope.sql);
+    Object.assign(params, scope.params);
   }
   if (filter.tag) {
     where.push(tagFilterSql('@tag'));
@@ -99,6 +109,10 @@ export function getStats(userId: string, filterInput: unknown = {}, now = new Da
        FROM cards c WHERE ${cardWhere}`
     )
     .get(params) as { total: number; new_cards: number; learning: number; review: number; mature: number; suspended: number };
+
+  const { drafts } = db
+    .prepare(`SELECT COUNT(*) AS drafts FROM cards c WHERE ${cardWhere.replace(`c.status = 'active'`, `c.status = 'draft'`)}`)
+    .get(params) as { drafts: number };
 
   const retentionRow = db
     .prepare(
@@ -178,6 +192,7 @@ export function getStats(userId: string, filterInput: unknown = {}, now = new Da
       review: cardsRow.review,
       mature: cardsRow.mature,
       suspended: cardsRow.suspended,
+      drafts,
     },
     retention30d: {
       reviews: retentionRow.reviews,

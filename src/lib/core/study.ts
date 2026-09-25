@@ -14,7 +14,7 @@
 import { z } from 'zod';
 import { genId, getDb } from './db';
 import { CARD_SELECT, getCardRow, tagFilterSql, toCard, toQuestion } from './cards';
-import { resolveDeck } from './decks';
+import { deckScopeSql } from './decks';
 import { badRequest } from './errors';
 import { previewOutcomes, schedule } from './scheduler';
 import { getSettings, type UserSettings } from './settings';
@@ -22,7 +22,7 @@ import { formatInterval, studyDay } from './time';
 import { RATINGS, type Card, type CardRow, type QueueCounts, type QuestionCard, type Rating, type ReviewSource } from './types';
 
 export const StudyFilterSchema = z.object({
-  deck: z.string().trim().min(1).max(200).optional(),
+  deck: z.string().trim().min(1).max(300).optional(),
   tag: z.string().trim().min(1).max(100).optional(),
 });
 
@@ -51,15 +51,16 @@ interface QueueScope {
 function buildScope(userId: string, filter: StudyFilter, now: Date): QueueScope {
   const settings = getSettings(userId);
   const day = studyDay(now, settings.timezone, settings.dayStartHour);
-  const where = ['c.user_id = @userId', 'c.suspended = 0'];
+  const where = ['c.user_id = @userId', `c.status = 'active'`, 'c.suspended = 0'];
   const params: Record<string, unknown> = {
     userId,
     now: now.toISOString(),
     dayEnd: day.end.toISOString(),
   };
   if (filter.deck) {
-    where.push('c.deck_id = @deckId');
-    params.deckId = resolveDeck(userId, filter.deck).id;
+    const scope = deckScopeSql(userId, filter.deck);
+    where.push(scope.sql);
+    Object.assign(params, scope.params);
   }
   if (filter.tag) {
     where.push(tagFilterSql('@tag'));

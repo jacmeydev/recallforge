@@ -12,6 +12,10 @@ import * as exportRoute from '@/app/api/v1/export/route';
 import * as apiKeyRoute from '@/app/api/v1/account/api-key/route';
 import * as registerRoute from '@/app/api/auth/register/route';
 import * as mcpRoute from '@/app/api/mcp/route';
+import * as documentsRoute from '@/app/api/v1/documents/route';
+import * as documentReadRoute from '@/app/api/v1/documents/[id]/read/route';
+import * as approveRoute from '@/app/api/v1/cards/approve/route';
+import { buildPdf, buildPptx } from './fixtures';
 import { createTestUser, useFreshDatabase } from './helpers';
 
 const BASE = 'http://localhost:3030';
@@ -154,6 +158,48 @@ describe('REST API v1', () => {
     }
   });
 
+  it('uploads a file, reads it and approves the drafts made from it', async () => {
+    const form = new FormData();
+    form.append('file', new File([Buffer.from(await buildPptx([{ lines: ['Ciclo de Krebs', 'Ocurre en la mitocondria'] }]))], 'bioquimica.pptx'));
+    form.append('deck', 'Medicina::Bioquímica');
+    const upload = await json(
+      await documentsRoute.POST(
+        new Request(`${BASE}/api/v1/documents`, { method: 'POST', headers: { authorization: `Bearer ${apiKey}` }, body: form }),
+        { params: Promise.resolve({}) }
+      )
+    );
+    expect(upload.status).toBe(201);
+    expect(upload.body.document).toMatchObject({ title: 'bioquimica', parts: 1, deck: { name: 'Medicina::Bioquímica' } });
+    const id = upload.body.document.id;
+
+    const read = await json(await call(documentReadRoute.GET, `/api/v1/documents/${id}/read?fromPart=0`, { params: { id } }));
+    expect(read.body.parts[0]).toMatchObject({ index: 0, label: 'diapositiva 1' });
+
+    const created = await json(
+      await call(cardsRoute.POST, '/api/v1/cards', {
+        method: 'POST',
+        body: { documentId: id, draft: true, cards: [{ front: '¿Dónde ocurre el ciclo de Krebs?', back: 'En la matriz mitocondrial', documentPart: 0 }] },
+      })
+    );
+    expect(created.body.status).toBe('draft');
+    const approved = await json(await call(approveRoute.POST, '/api/v1/cards/approve', { method: 'POST', body: { documentId: id } }));
+    expect(approved.body).toEqual({ approved: 1 });
+
+    const unsupported = await documentsRoute.POST(
+      new Request(`${BASE}/api/v1/documents`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${apiKey}` },
+        body: (() => {
+          const f = new FormData();
+          f.append('file', new File(['x'], 'foto.png'));
+          return f;
+        })(),
+      }),
+      { params: Promise.resolve({}) }
+    );
+    expect(unsupported.status).toBe(400);
+  });
+
   it('registers the first account and returns the API key once', async () => {
     useFreshDatabase();
     const res = await json(
@@ -211,12 +257,17 @@ describe('MCP endpoint', () => {
     const tools = (await rpc('tools/list')).body.result.tools.map((t: { name: string }) => t.name).sort();
     expect(tools).toEqual([
       'add_cards',
+      'add_document',
+      'approve_cards',
       'delete_cards',
       'delete_deck',
+      'delete_document',
       'get_next_card',
       'get_stats',
       'grade_card',
       'list_decks',
+      'list_documents',
+      'read_document',
       'reveal_answer',
       'search_cards',
       'update_card',
@@ -264,6 +315,41 @@ describe('MCP endpoint', () => {
 
     const settings = await tool('update_settings', { new_cards_per_day: 5 });
     expect(settings.data.settings.newCardsPerDay).toBe(5);
+  });
+
+  it('lets an agent store a document and turn it into reviewed drafts', async () => {
+    const stored = await tool('add_document', {
+      title: 'Clase de cardio',
+      deck: 'Medicina::Cardiología',
+      content_base64: Buffer.from(buildPdf(['El nodo sinusal marca el ritmo', 'La onda P es auricular'])).toString('base64'),
+      filename: 'cardio.pdf',
+    });
+    expect(stored.data.document).toMatchObject({ parts: 2, deck: { name: 'Medicina::Cardiología' } });
+    const documentId = stored.data.document.id;
+
+    const read = await tool('read_document', { document_id: documentId, max_chars: 500 });
+    expect(read.data.parts.map((p: { label: string }) => p.label)).toEqual(['p. 1', 'p. 2']);
+
+    const added = await tool('add_cards', {
+      document_id: documentId,
+      draft: true,
+      cards: [{ front: '¿Qué estructura marca el ritmo cardíaco normal?', back: 'El nodo sinusal', document_part: 0 }],
+    });
+    expect(added.data).toMatchObject({ status: 'draft', created: [{ deck: 'Medicina::Cardiología' }] });
+
+    const outline = await tool('read_document', { document_id: documentId, outline_only: true });
+    expect(outline.data.document.outline.map((p: { cards: number }) => p.cards)).toEqual([1, 0]);
+
+    const drafts = await tool('search_cards', { state: 'draft', document_id: documentId });
+    expect(drafts.data.cards[0].source).toBe('Clase de cardio, p. 1');
+
+    expect((await tool('get_next_card')).data.card).toBeNull();
+    expect((await tool('approve_cards', { card_ids: [drafts.data.cards[0].id] })).data).toEqual({ approved: 1 });
+    expect((await tool('get_next_card', { deck: 'Medicina' })).data.card.front).toBe('¿Qué estructura marca el ritmo cardíaco normal?');
+
+    const text = await tool('add_document', { title: 'Notas', text: '# Uno\nA\n# Dos\nB' });
+    expect(text.data.document.parts).toBe(2);
+    expect((await tool('list_documents')).data.documents).toHaveLength(2);
   });
 
   it('returns tool errors instead of crashing', async () => {

@@ -6,9 +6,10 @@
 
 import { z } from 'zod';
 import { genId, getDb, nowIso } from './db';
-import { getOrCreateDeck, resolveDeck } from './decks';
+import { deckScopeSql, getOrCreateDeck } from './decks';
 import { badRequest, notFound } from './errors';
 import { getSettings } from './settings';
+import { checkCardQuality } from './quality';
 import { retrievability } from './scheduler';
 import type { Card, CardRow, QuestionCard, StudySettings } from './types';
 
@@ -20,14 +21,28 @@ export const CardInputSchema = z.object({
   explanation: z.string().trim().max(8000).optional(),
   source: z.string().trim().max(500).optional(),
   tags: tagsSchema.optional(),
-  deck: z.string().trim().min(1).max(200).optional(),
+  deck: z.string().trim().min(1).max(300).optional(),
+  /** Index of the document part (page, slide, section) the card comes from. */
+  documentPart: z.number().int().min(0).optional(),
 });
 
 export const AddCardsSchema = z.object({
-  deck: z.string().trim().min(1).max(200).optional(),
+  deck: z.string().trim().min(1).max(300).optional(),
   cards: z.array(CardInputSchema).min(1).max(500),
   allowDuplicates: z.boolean().optional(),
+  /** Source document; its default deck is used when no deck is given. */
+  documentId: z.string().trim().min(1).optional(),
+  /** Create the cards as drafts that the learner approves before studying them. */
+  draft: z.boolean().optional(),
 });
+
+export const ApproveCardsSchema = z
+  .object({
+    ids: z.array(z.string().min(1)).min(1).max(1000).optional(),
+    documentId: z.string().min(1).optional(),
+    deck: z.string().trim().min(1).max(300).optional(),
+  })
+  .refine((value) => value.ids || value.documentId || value.deck, 'Provide ids, documentId or deck');
 
 export const CardPatchSchema = z
   .object({
@@ -36,21 +51,26 @@ export const CardPatchSchema = z
     explanation: z.string().trim().max(8000),
     source: z.string().trim().max(500),
     tags: tagsSchema,
-    deck: z.string().trim().min(1).max(200),
+    deck: z.string().trim().min(1).max(300),
     suspended: z.boolean(),
   })
   .partial();
 
 export const SearchCardsSchema = z.object({
   query: z.string().trim().max(500).optional(),
-  deck: z.string().trim().max(200).optional(),
+  deck: z.string().trim().max(300).optional(),
   tag: z.string().trim().max(100).optional(),
-  state: z.enum(['new', 'learning', 'review', 'suspended', 'due', 'leech']).optional(),
+  documentId: z.string().trim().max(100).optional(),
+  state: z.enum(['new', 'learning', 'review', 'suspended', 'due', 'leech', 'draft']).optional(),
   limit: z.number().int().min(1).max(500).optional(),
   offset: z.number().int().min(0).optional(),
 });
 
-export const CARD_SELECT = `SELECT c.*, d.name AS deck_name FROM cards c JOIN decks d ON d.id = c.deck_id`;
+export const CARD_SELECT = `SELECT c.*, d.name AS deck_name, doc.title AS document_title, dp.label AS document_label
+  FROM cards c
+  JOIN decks d ON d.id = c.deck_id
+  LEFT JOIN documents doc ON doc.id = c.document_id
+  LEFT JOIN document_parts dp ON dp.document_id = c.document_id AND dp.idx = c.document_part`;
 
 export function normalizeTags(tags: string[] | undefined): string[] {
   const seen = new Set<string>();
@@ -101,6 +121,11 @@ export function toCard(row: CardRow, settings: StudySettings, now = new Date()):
     retrievability: retrievability(row, settings, now),
     lastReviewAt: row.last_review_at,
     suspended: row.suspended === 1,
+    status: row.status ?? 'active',
+    document:
+      row.document_id && row.document_title
+        ? { id: row.document_id, title: row.document_title, part: row.document_part, label: row.document_label ?? null }
+        : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -119,25 +144,43 @@ export function getCard(userId: string, id: string): Card {
 export interface AddCardsResult {
   created: Array<{ id: string; deck: string; front: string }>;
   skipped: Array<{ index: number; front: string; reason: string; existingCardId?: string }>;
+  /** Possible quality problems; the cards were still created. Fix them with update_card. */
+  warnings: Array<{ index: number; cardId: string; front: string; issues: string[] }>;
   decksCreated: string[];
+  status: 'active' | 'draft';
 }
 
 export function addCards(userId: string, input: unknown): AddCardsResult {
   const parsed = AddCardsSchema.safeParse(input);
   if (!parsed.success) throw badRequest('Invalid cards', parsed.error.issues);
-  const { cards, allowDuplicates } = parsed.data;
-  const defaultDeck = parsed.data.deck;
+  const { cards, allowDuplicates, documentId } = parsed.data;
+  const status = parsed.data.draft ? 'draft' : 'active';
+  const db = getDb();
+
+  const document = documentId
+    ? (db
+        .prepare(
+          `SELECT doc.id, doc.title, doc.parts, d.name AS deck_name FROM documents doc
+           LEFT JOIN decks d ON d.id = doc.deck_id WHERE doc.user_id = ? AND doc.id = ?`
+        )
+        .get(userId, documentId) as { id: string; title: string; parts: number; deck_name: string | null } | undefined)
+    : undefined;
+  if (documentId && !document) throw notFound('Document', documentId);
+  const defaultDeck = parsed.data.deck ?? document?.deck_name ?? undefined;
 
   for (const [index, card] of cards.entries()) {
     if (!card.deck && !defaultDeck) throw badRequest(`Card ${index} has no deck (set "deck" on the request or the card)`);
+    if (card.documentPart !== undefined && (!document || card.documentPart >= document.parts)) {
+      throw badRequest(`Card ${index} has an invalid documentPart`);
+    }
   }
 
-  const db = getDb();
-  const result: AddCardsResult = { created: [], skipped: [], decksCreated: [] };
+  const result: AddCardsResult = { created: [], skipped: [], warnings: [], decksCreated: [], status };
   const insert = db.prepare(`
-    INSERT INTO cards (id, user_id, deck_id, front, back, explanation, source, tags, state, due_at, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?)
+    INSERT INTO cards (id, user_id, deck_id, front, back, explanation, source, tags, state, due_at, status, document_id, document_part, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ?)
   `);
+  const partLabel = db.prepare(`SELECT label FROM document_parts WHERE document_id = ? AND idx = ?`);
 
   db.transaction(() => {
     const fronts = new Map<string, Map<string, string>>();
@@ -165,6 +208,11 @@ export function addCards(userId: string, input: unknown): AddCardsResult {
       // Stagger creation times by a millisecond so new cards keep their input order.
       const createdAt = new Date(Date.now() + index).toISOString();
       const id = genId();
+      const label =
+        document && card.documentPart !== undefined
+          ? (partLabel.get(document.id, card.documentPart) as { label: string } | undefined)?.label
+          : undefined;
+      const source = card.source ?? (document ? [document.title, label].filter(Boolean).join(', ') : '');
       insert.run(
         id,
         userId,
@@ -172,14 +220,19 @@ export function addCards(userId: string, input: unknown): AddCardsResult {
         card.front,
         card.back,
         card.explanation ?? '',
-        card.source ?? '',
+        source,
         JSON.stringify(normalizeTags(card.tags)),
         createdAt,
+        status,
+        document?.id ?? null,
+        card.documentPart ?? null,
         createdAt,
         createdAt
       );
       existing.set(key, id);
       result.created.push({ id, deck: deck.name, front: card.front });
+      const issues = checkCardQuality(card);
+      if (issues.length > 0) result.warnings.push({ index, cardId: id, front: card.front, issues });
     }
   })();
 
@@ -232,13 +285,18 @@ export function tagFilterSql(param: string): string {
 export function searchCards(userId: string, input: unknown, now = new Date()): { total: number; cards: Card[] } {
   const parsed = SearchCardsSchema.safeParse(input);
   if (!parsed.success) throw badRequest('Invalid search', parsed.error.issues);
-  const { query, deck, tag, state, limit = 50, offset = 0 } = parsed.data;
+  const { query, deck, tag, documentId, state, limit = 50, offset = 0 } = parsed.data;
 
-  const where = ['c.user_id = @userId'];
+  const where = ['c.user_id = @userId', state === 'draft' ? `c.status = 'draft'` : `c.status = 'active'`];
   const params: Record<string, unknown> = { userId, now: now.toISOString() };
   if (deck) {
-    where.push('c.deck_id = @deckId');
-    params.deckId = resolveDeck(userId, deck).id;
+    const scope = deckScopeSql(userId, deck);
+    where.push(scope.sql);
+    Object.assign(params, scope.params);
+  }
+  if (documentId) {
+    where.push('c.document_id = @documentId');
+    params.documentId = documentId;
   }
   if (tag) {
     where.push(tagFilterSql('@tag'));
@@ -274,11 +332,50 @@ export function searchCards(userId: string, input: unknown, now = new Date()): {
   const { total } = db
     .prepare(`SELECT COUNT(*) AS total FROM cards c WHERE ${whereSql}`)
     .get(params) as { total: number };
-  const order = state === 'leech' ? 'c.lapses DESC, c.stability ASC' : state === 'due' ? 'c.due_at ASC' : 'c.created_at DESC';
+  const order =
+    state === 'leech'
+      ? 'c.lapses DESC, c.stability ASC'
+      : state === 'due'
+        ? 'c.due_at ASC'
+        : state === 'draft'
+          ? 'c.created_at ASC'
+          : 'c.created_at DESC';
   const rows = db
     .prepare(`${CARD_SELECT} WHERE ${whereSql} ORDER BY ${order} LIMIT @limit OFFSET @offset`)
     .all({ ...params, limit, offset }) as CardRow[];
 
   const settings = getSettings(userId);
   return { total, cards: rows.map((row) => toCard(row, settings, now)) };
+}
+
+/**
+ * Approve draft cards so they enter the study queue: by ids, by source
+ * document, or every draft in a deck (and its subdecks).
+ */
+export function approveCards(userId: string, input: unknown): { approved: number } {
+  const parsed = ApproveCardsSchema.safeParse(input);
+  if (!parsed.success) throw badRequest('Invalid approval', parsed.error.issues);
+  const { ids, documentId, deck } = parsed.data;
+  const where = [`c.user_id = @userId`, `c.status = 'draft'`];
+  const params: Record<string, unknown> = { userId, now: nowIso() };
+  if (ids) {
+    where.push(`c.id IN (SELECT value FROM json_each(@ids))`);
+    params.ids = JSON.stringify(ids);
+  }
+  if (documentId) {
+    where.push('c.document_id = @documentId');
+    params.documentId = documentId;
+  }
+  if (deck) {
+    const scope = deckScopeSql(userId, deck);
+    where.push(scope.sql);
+    Object.assign(params, scope.params);
+  }
+  const result = getDb()
+    .prepare(
+      `UPDATE cards SET status = 'active', due_at = @now, updated_at = @now
+       WHERE id IN (SELECT c.id FROM cards c WHERE ${where.join(' AND ')})`
+    )
+    .run(params);
+  return { approved: result.changes };
 }

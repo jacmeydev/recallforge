@@ -63,6 +63,15 @@ export function Dashboard() {
 
       {error && <p className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
 
+      {stats && stats.cards.drafts > 0 && (
+        <Link
+          href="/drafts"
+          className="block rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 hover:bg-amber-100"
+        >
+          Tienes <strong>{stats.cards.drafts}</strong> tarjetas creadas por tu agente esperando revisión. Revísalas antes de estudiarlas →
+        </Link>
+      )}
+
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <Stat label="Pendientes hoy" value={stats ? dueTotal : '—'} hint={stats ? `${stats.due.new} nuevas · ${stats.due.review} repasos · ${stats.due.learning} en aprendizaje` : ''} />
         <Stat
@@ -80,7 +89,7 @@ export function Dashboard() {
 
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle>Mazos</CardTitle>
+          <CardTitle>Materias</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           {decks && decks.length === 0 && (
@@ -92,14 +101,27 @@ export function Dashboard() {
           {decks && decks.length > 0 && (
             <div className="divide-y rounded-lg border">
               {decks.map((deck) => (
-                <div key={deck.id} className="flex flex-wrap items-center gap-3 p-3">
-                  <Link href={`/deck/${deck.id}`} className="min-w-0 flex-1 font-medium hover:underline">
-                    {deck.name}
-                    <span className="ml-2 text-xs font-normal text-muted-foreground">{deck.counts.total} tarjetas</span>
+                <div
+                  key={deck.id}
+                  className="flex flex-wrap items-center gap-3 p-3"
+                  style={{ paddingLeft: `${0.75 + deck.depth * 1.5}rem` }}
+                >
+                  <Link href={`/deck/${deck.id}`} className={`min-w-0 flex-1 hover:underline ${deck.depth === 0 ? 'font-semibold' : 'font-medium'}`}>
+                    {deck.depth > 0 && <span className="mr-1 text-muted-foreground">└</span>}
+                    {deck.shortName}
+                    <span className="ml-2 text-xs font-normal text-muted-foreground">{deck.totals.total} tarjetas</span>
                   </Link>
                   <span className="text-xs text-muted-foreground">
-                    <span className="text-blue-600">{deck.counts.new} nuevas</span> ·{' '}
-                    <span className="text-emerald-600">{deck.counts.due} pendientes</span>
+                    <span className="text-blue-600">{deck.totals.new} nuevas</span> ·{' '}
+                    <span className="text-emerald-600">{deck.totals.due} pendientes</span>
+                    {deck.totals.drafts > 0 && (
+                      <>
+                        {' '}·{' '}
+                        <Link href={`/drafts?deck=${encodeURIComponent(deck.id)}`} className="text-amber-600 hover:underline">
+                          {deck.totals.drafts} por revisar
+                        </Link>
+                      </>
+                    )}
                   </span>
                   <Button asChild variant="outline" size="sm">
                     <Link href={`/review?deck=${encodeURIComponent(deck.id)}`}>Repasar</Link>
@@ -109,7 +131,12 @@ export function Dashboard() {
             </div>
           )}
           <form onSubmit={createDeck} className="flex gap-2">
-            <Input value={newDeck} onChange={(e) => setNewDeck(e.target.value)} placeholder="Nuevo mazo, p. ej. Farmacología" maxLength={200} />
+            <Input
+              value={newDeck}
+              onChange={(e) => setNewDeck(e.target.value)}
+              placeholder="Nueva materia, p. ej. Medicina::Farmacología::Antibióticos"
+              maxLength={300}
+            />
             <Button type="submit" variant="secondary">
               Crear
             </Button>

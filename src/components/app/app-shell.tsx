@@ -4,6 +4,8 @@ import { SignOutButton } from './sign-out-button';
 const NAV = [
   { href: '/', label: 'Inicio' },
   { href: '/review', label: 'Repasar' },
+  { href: '/documents', label: 'Documentos' },
+  { href: '/drafts', label: 'Por revisar' },
   { href: '/account', label: 'Cuenta y agentes' },
 ];
 

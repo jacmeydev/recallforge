@@ -45,17 +45,30 @@ export interface Deck {
   updatedAt: string;
 }
 
-export interface DeckSummary extends Deck {
-  counts: {
-    total: number;
-    new: number;
-    learning: number;
-    review: number;
-    suspended: number;
-    /** Learning cards due within the learn-ahead window + review cards due before the study day ends. */
-    due: number;
-  };
+export interface DeckCounts {
+  total: number;
+  new: number;
+  learning: number;
+  review: number;
+  suspended: number;
+  /** AI-generated cards waiting for the learner's approval (not studied yet). */
+  drafts: number;
+  /** Learning cards due within the learn-ahead window + review cards due before the study day ends. */
+  due: number;
 }
+
+export interface DeckSummary extends Deck {
+  /** Last path segment: "Antibióticos" for "Medicina::Farmacología::Antibióticos". */
+  shortName: string;
+  parentId: string | null;
+  depth: number;
+  /** Cards directly in this deck. */
+  counts: DeckCounts;
+  /** Cards in this deck and all its subdecks. */
+  totals: DeckCounts;
+}
+
+export type CardStatus = 'active' | 'draft';
 
 /** What the learner may see before answering. Never contains the answer. */
 export interface QuestionCard {
@@ -79,6 +92,10 @@ export interface Card extends QuestionCard {
   retrievability: number | null;
   lastReviewAt: string | null;
   suspended: boolean;
+  /** "draft" cards wait for the learner's approval and are never studied. */
+  status: CardStatus;
+  /** Source document and part (page, slide or section) the card was made from. */
+  document: { id: string; title: string; part: number | null; label: string | null } | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -111,6 +128,11 @@ export interface CardRow {
   learning_steps: number;
   last_review_at: string | null;
   suspended: number;
+  status: CardStatus;
+  document_id: string | null;
+  document_part: number | null;
+  document_title?: string | null;
+  document_label?: string | null;
   created_at: string;
   updated_at: string;
 }

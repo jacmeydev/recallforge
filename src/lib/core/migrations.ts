@@ -106,6 +106,42 @@ const MIGRATIONS: Migration[] = [
       if (legacy) convertLegacyData(db);
     },
   },
+  {
+    // Source documents (split into pages/slides/sections), draft review and
+    // per-card provenance.
+    id: '2026_09_documents_and_drafts',
+    up(db) {
+      db.exec(`
+        CREATE TABLE documents (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          title TEXT NOT NULL,
+          filename TEXT,
+          mime_type TEXT,
+          deck_id TEXT REFERENCES decks(id) ON DELETE SET NULL,
+          parts INTEGER NOT NULL DEFAULT 0,
+          chars INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX ix_documents_user ON documents(user_id, created_at);
+
+        CREATE TABLE document_parts (
+          document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+          idx INTEGER NOT NULL,
+          label TEXT NOT NULL,
+          text TEXT NOT NULL,
+          PRIMARY KEY (document_id, idx)
+        );
+
+        ALTER TABLE cards ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
+        ALTER TABLE cards ADD COLUMN document_id TEXT REFERENCES documents(id) ON DELETE SET NULL;
+        ALTER TABLE cards ADD COLUMN document_part INTEGER;
+        CREATE INDEX ix_cards_document ON cards(document_id, document_part);
+        CREATE INDEX ix_cards_status ON cards(user_id, status);
+      `);
+    },
+  },
 ];
 
 export function runMigrations(db: DB): string[] {
