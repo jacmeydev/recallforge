@@ -7,15 +7,15 @@ description: Run active-recall study sessions and create high-quality flashcards
 
 RecallForge is the learner's spaced-repetition memory. It stores question/answer cards and schedules each one with FSRS. You ask the questions, judge the answers and report how well the learner recalled; RecallForge decides when each card comes back.
 
-If a `recallforge` MCP server is connected, use its tools (same names and semantics as below). Otherwise call the REST API.
+If a `recallforge` MCP server is connected, use its tools (same names and semantics as below); it is the preferred way. Otherwise call the REST API of the learner's local RecallForge web app.
 
 ## Setup (REST)
 
-- `RECALLFORGE_URL` — server base URL, e.g. `http://localhost:3030`
-- `RECALLFORGE_API_KEY` — the learner's key (`rf_...`), from the web app → *Cuenta y agentes*
+- `RECALLFORGE_URL` — usually `http://127.0.0.1:3030` (the learner starts it with `node dist/cli.mjs ui`)
+- `RECALLFORGE_TOKEN` — only if the learner exposed RecallForge remotely with a token; leave empty for local use
 
 ```bash
-rf() { curl -sS -H "Authorization: Bearer $RECALLFORGE_API_KEY" -H 'content-type: application/json' "$@"; }
+rf() { curl -sS ${RECALLFORGE_TOKEN:+-H "Authorization: Bearer $RECALLFORGE_TOKEN"} -H 'content-type: application/json' "$@"; }
 rf "$RECALLFORGE_URL/api/v1"   # endpoint index
 ```
 
@@ -39,7 +39,18 @@ Errors come back as `{"error":{"code","message","details"}}` with a 4xx status.
    - `easy` — instant, complete, effortless
 6. Continue with `next.card`. When it is `null`, relay `next.message` (it says when the next card is due, or that the daily new-card limit was reached) and summarise the session: cards reviewed and what to revisit.
 
-One question per message. If the learner disputes a grade, grade the card again with their rating.
+One question per message. If a grade was wrong or the learner disputes it, undo it with `rf -X POST "$RECALLFORGE_URL/api/v1/study/undo" -d '{"cardId":"ID"}'` and grade again.
+If the grade result says `"leech": true`, the card keeps being forgotten: tell the learner and offer to rewrite it (split it, add a mnemonic in `explanation`, clarify the question).
+
+## Exam preparation
+
+1. Set the exam day on the subject: `rf -X PATCH "$RECALLFORGE_URL/api/v1/decks/Medicina::Microbiología" -d '{"examDate":"2026-10-20"}'`.
+2. Study with `mode=exam`: `rf "$RECALLFORGE_URL/api/v1/study/next?deck=Medicina::Microbiología&mode=exam"` and pass `"mode":"exam"` in each grade. It ignores due dates and daily limits and asks first the cards least likely to be remembered on exam day.
+3. Report readiness from `GET /api/v1/progress` (`subjects[].exam.predictedRecall`).
+
+## Progress
+
+`GET /api/v1/progress` returns every subject's mastery (estimated recall of all its cards now; unseen cards count as 0), coverage, consolidated and weak counts, exam readiness, a daily study heatmap and document coverage. Summarize it visually (a short table or bars) and suggest what to study next.
 
 ## Creating cards
 
@@ -70,7 +81,7 @@ One question per message. If the learner disputes a grade, grade the card again 
 
 1. Store it. If you read the file yourself, send the text; otherwise upload the file:
    `rf -X POST "$RECALLFORGE_URL/api/v1/documents" -d '{"title":"Guyton cap. 9","deck":"Medicina::Fisiología","text":"..."}'`
-   `curl -sS -H "Authorization: Bearer $RECALLFORGE_API_KEY" -F file=@clase3.pdf -F deck="Medicina::Fisiología" "$RECALLFORGE_URL/api/v1/documents"`
+   `curl -sS ${RECALLFORGE_TOKEN:+-H "Authorization: Bearer $RECALLFORGE_TOKEN"} -F file=@clase3.pdf -F deck="Medicina::Fisiología" "$RECALLFORGE_URL/api/v1/documents"`
    The learner can also upload it in the web app (*Documentos*); find it with `GET /api/v1/documents`.
 2. Read it part by part (pages, slides or sections, each with how many cards it already has):
    `rf "$RECALLFORGE_URL/api/v1/documents/ID/read?fromPart=0"` → follow `nextPart` until it is `null`.

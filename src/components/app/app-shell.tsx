@@ -1,15 +1,15 @@
 import Link from 'next/link';
-import { SignOutButton } from './sign-out-button';
 
 const NAV = [
   { href: '/', label: 'Inicio' },
   { href: '/review', label: 'Repasar' },
   { href: '/documents', label: 'Documentos' },
   { href: '/drafts', label: 'Por revisar' },
-  { href: '/account', label: 'Cuenta y agentes' },
+  { href: '/progress', label: 'Progreso' },
+  { href: '/settings', label: 'Agentes y ajustes' },
 ];
 
-export function AppShell({ userName, children }: { userName: string; children: React.ReactNode }) {
+export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b bg-card/80 backdrop-blur">
@@ -24,10 +24,6 @@ export function AppShell({ userName, children }: { userName: string; children: R
               </Link>
             ))}
           </nav>
-          <div className="flex items-center gap-3 text-sm text-muted-foreground">
-            <span className="hidden sm:inline">{userName}</span>
-            <SignOutButton />
-          </div>
         </div>
       </header>
       <main className="mx-auto max-w-5xl px-4 py-6">{children}</main>

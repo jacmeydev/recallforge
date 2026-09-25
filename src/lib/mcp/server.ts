@@ -15,7 +15,8 @@ import { deleteDocument, getDocument, importDocumentFile, importDocumentText, li
 import { AppError } from '@/lib/core/errors';
 import { updateSettings } from '@/lib/core/settings';
 import { getStats } from '@/lib/core/stats';
-import { gradeCard, nextCard, revealCard } from '@/lib/core/study';
+import { getProgressMap } from '@/lib/core/progress';
+import { gradeCard, nextCard, revealCard, undoLastReview } from '@/lib/core/study';
 import type { AuthUser } from '@/lib/core/types';
 
 export const MCP_SERVER_VERSION = '2.0.0';
@@ -34,7 +35,11 @@ STUDY SESSION
    - easy: instant, complete and effortless
    Include user_answer (the learner's words) and a one-line feedback note; they are shown on future attempts. Pass the same deck/tag you used in get_next_card: the response contains the next question in \`next\`.
 6. Continue with \`next.card\`. When it is null, relay \`next.message\` and close with a short summary (cards reviewed, what to revisit).
-One question per message, keep the pace brisk. If the learner disputes your grade, re-grade with their rating (grading the same card again is fine).
+One question per message, keep the pace brisk. If you graded wrongly or the learner disputes the grade, call undo_last_review and grade again.
+If grade_card returns leech: true, the card keeps being forgotten: tell the learner and offer to rewrite it (split it, add a mnemonic or context in explanation, fix ambiguity) with update_card.
+
+EXAM PREPARATION
+When the learner has an exam, set it with update_deck(exam_date) on that subject. Then study with get_next_card(deck, mode: "exam") (and pass mode "exam" to grade_card): it ignores due dates and daily limits and asks first the cards they are least likely to remember on exam day. get_progress_map shows each subject's predicted recall on exam day.
 
 CREATING CARDS
 Quality rules (from spaced-repetition research; the server flags violations in add_cards.warnings - fix them with update_card):
@@ -57,7 +62,7 @@ FROM A DOCUMENT (PDF, slides, notes, a web page…)
 4. Tell the learner how many drafts were created per section and ask them to review: they can approve in the web app, or you can show them and call approve_cards.
 
 PLANNING
-get_stats gives due counts, today's progress, 30-day retention, streak, a 7-day forecast and the weakest cards (repeated failures). Use it to suggest what to study. Timestamps are UTC ISO-8601; the learner's timezone is in get_stats.settings.`;
+get_stats gives due counts, today's progress, 30-day retention, streak, a 7-day forecast and the weakest cards (repeated failures). get_progress_map gives the whole picture: every subject's mastery (estimated recall of all its cards right now), coverage, consolidated and weak cards, exam readiness, the study heatmap and document coverage. Use them to suggest what to study next, and present progress as a short, visual summary (a table or bars) rather than raw numbers. Timestamps are UTC ISO-8601; the learner's timezone is in get_stats.settings.`;
 
 function ok(data: unknown): CallToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(data) }] };
@@ -104,11 +109,15 @@ export function createMcpServer(user: AuthUser): McpServer {
     {
       title: 'Get next card',
       description:
-        'Next card due for active recall. Returns only the question (front) plus remaining counts; the answer is withheld until reveal_answer. card is null when nothing is due (see message and nextDueAt).',
-      inputSchema: { deck: deckRef.optional(), tag: tagFilter.optional() },
+        'Next card due for active recall. Returns only the question (front) plus remaining counts; the answer is withheld until reveal_answer. card is null when nothing is due (see message and nextDueAt). mode "exam" (needs a deck with an exam date) asks the cards least likely to be remembered on exam day, ignoring due dates and limits.',
+      inputSchema: {
+        deck: deckRef.optional(),
+        tag: tagFilter.optional(),
+        mode: z.enum(['normal', 'exam']).optional().describe('Default "normal"'),
+      },
       annotations: { readOnlyHint: true },
     },
-    ({ deck, tag }) => run(() => nextCard(user.id, { deck, tag }))
+    ({ deck, tag, mode }) => run(() => nextCard(user.id, { deck, tag, mode }))
   );
 
   server.registerTool(
@@ -136,13 +145,37 @@ export function createMcpServer(user: AuthUser): McpServer {
         feedback: z.string().optional().describe('One-line note on what was right/wrong, shown on future attempts'),
         deck: deckRef.optional().describe('Filter for the next card (use the same as get_next_card)'),
         tag: tagFilter.optional(),
+        mode: z.enum(['normal', 'exam']).optional(),
       },
     },
-    ({ card_id, rating, user_answer, feedback, deck, tag }) =>
+    ({ card_id, rating, user_answer, feedback, deck, tag, mode }) =>
       run(() => ({
         result: gradeCard(user.id, card_id, { rating, answer: user_answer, feedback }, 'agent'),
-        next: nextCard(user.id, { deck, tag }),
+        next: nextCard(user.id, { deck, tag, mode }),
       }))
+  );
+
+  server.registerTool(
+    'undo_last_review',
+    {
+      title: 'Undo last review',
+      description:
+        'Undo the most recent grade (of card_id, or of any card): the card goes back exactly as it was and the review is removed from the history. Use it when a grade was wrong, then grade again.',
+      inputSchema: { card_id: z.string().optional() },
+    },
+    ({ card_id }) => run(() => undoLastReview(user.id, card_id))
+  );
+
+  server.registerTool(
+    'get_progress_map',
+    {
+      title: 'Get progress map',
+      description:
+        "The learner's knowledge map: every subject (tree) with mastery (estimated recall of all its cards now, unseen = 0), coverage (share of cards studied), consolidated, weak, due and draft counts, exam readiness (predicted recall on exam day), a daily study heatmap and document coverage.",
+      inputSchema: { days: z.number().int().min(7).max(400).optional().describe('Heatmap length in days (default 182)') },
+      annotations: { readOnlyHint: true },
+    },
+    ({ days }) => run(() => getProgressMap(user.id, { days }))
   );
 
   server.registerTool(
@@ -347,11 +380,18 @@ export function createMcpServer(user: AuthUser): McpServer {
   server.registerTool(
     'update_deck',
     {
-      title: 'Rename or move deck',
-      description: 'Rename a deck, move it under another subject by giving a new path (subdecks move along), or change its description.',
-      inputSchema: { deck: deckRef, name: z.string().optional(), description: z.string().optional() },
+      title: 'Update deck (rename, move, exam date)',
+      description:
+        'Rename a deck, move it under another subject by giving a new path (subdecks move along), change its description, or set its exam date (applies to its subdecks too; null clears it).',
+      inputSchema: {
+        deck: deckRef,
+        name: z.string().optional(),
+        description: z.string().optional(),
+        exam_date: z.string().nullable().optional().describe('Exam day as YYYY-MM-DD, or null to clear'),
+      },
     },
-    ({ deck, name, description }) => run(() => ({ deck: updateDeck(user.id, deck, { name, description }) }))
+    ({ deck, name, description, exam_date }) =>
+      run(() => ({ deck: updateDeck(user.id, deck, { name, description, examDate: exam_date }) }))
   );
 
   server.registerTool(

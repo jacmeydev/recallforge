@@ -198,6 +198,33 @@ export function DeckView({ deckId }: { deckId: string }) {
         </div>
       </div>
 
+      {deck && (
+        <div className="flex flex-wrap items-center gap-2 rounded-xl border bg-card p-3 text-sm">
+          <span className="text-muted-foreground">Fecha de examen</span>
+          <Input
+            type="date"
+            className="h-8 w-44"
+            defaultValue={deck.examDate ?? ''}
+            key={deck.examDate ?? 'none'}
+            onChange={(e) =>
+              void run(async () => {
+                await api(`/api/v1/decks/${encodeURIComponent(deckId)}`, {
+                  method: 'PATCH',
+                  body: { examDate: e.target.value || null },
+                });
+                reload();
+              }, e.target.value ? 'Fecha de examen guardada' : 'Fecha de examen eliminada')
+            }
+          />
+          {deck.examDate && (
+            <Button asChild size="sm" variant="outline">
+              <Link href={`/review?deck=${encodeURIComponent(deckId)}&mode=exam`}>Repasar para el examen</Link>
+            </Button>
+          )}
+          <span className="text-xs text-muted-foreground">Se aplica también a sus submaterias.</span>
+        </div>
+      )}
+
       {error && <p className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
       {message && <p className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800">{message}</p>}
 

@@ -23,9 +23,16 @@ const deckName = z
   .refine((name) => name.length > 0, 'Deck name is required')
   .refine((name) => name.split(DECK_SEPARATOR).every((part) => part.length <= 100), 'Each level must be 100 characters or fewer');
 
+const examDate = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD')
+  .refine((value) => !Number.isNaN(Date.parse(`${value}T00:00:00Z`)), 'Invalid date')
+  .nullable();
+
 export const DeckInputSchema = z.object({
   name: deckName,
   description: z.string().trim().max(2000).optional(),
+  examDate: examDate.optional(),
 });
 
 export const DeckPatchSchema = DeckInputSchema.partial();
@@ -34,6 +41,7 @@ interface DeckRow {
   id: string;
   name: string;
   description: string;
+  exam_date: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -52,6 +60,7 @@ function toDeck(row: DeckRow): Deck {
     id: row.id,
     name: row.name,
     description: row.description,
+    examDate: row.exam_date ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -85,12 +94,12 @@ export function deckScopeSql(userId: string, ref: string): { sql: string; params
   };
 }
 
-function insertDeck(userId: string, name: string, description: string): DeckRow {
+function insertDeck(userId: string, name: string, description: string, examDateValue: string | null = null): DeckRow {
   const now = nowIso();
-  const row: DeckRow = { id: genId(), name, description, created_at: now, updated_at: now };
+  const row: DeckRow = { id: genId(), name, description, exam_date: examDateValue, created_at: now, updated_at: now };
   getDb()
-    .prepare(`INSERT INTO decks (id, user_id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`)
-    .run(row.id, userId, row.name, row.description, row.created_at, row.updated_at);
+    .prepare(`INSERT INTO decks (id, user_id, name, description, exam_date, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(row.id, userId, row.name, row.description, row.exam_date, row.created_at, row.updated_at);
   return row;
 }
 
@@ -106,11 +115,11 @@ function ensureAncestors(userId: string, name: string): void {
 export function createDeck(userId: string, input: unknown): Deck {
   const parsed = DeckInputSchema.safeParse(input);
   if (!parsed.success) throw badRequest('Invalid deck', parsed.error.issues);
-  const { name, description } = parsed.data;
+  const { name, description, examDate: exam } = parsed.data;
   if (findDeck(userId, name)) throw conflict(`A deck named "${name}" already exists`);
   return getDb().transaction(() => {
     ensureAncestors(userId, name);
-    return toDeck(insertDeck(userId, name, description ?? ''));
+    return toDeck(insertDeck(userId, name, description ?? '', exam ?? null));
   })();
 }
 
@@ -135,6 +144,7 @@ export function updateDeck(userId: string, ref: string, patch: unknown): Deck {
   const deck = resolveDeck(userId, ref);
   const name = parsed.data.name ?? deck.name;
   const description = parsed.data.description ?? deck.description;
+  const exam = parsed.data.examDate === undefined ? deck.examDate : parsed.data.examDate;
   const updatedAt = nowIso();
   const db = getDb();
 
@@ -154,9 +164,28 @@ export function updateDeck(userId: string, ref: string, patch: unknown): Deck {
         rename.run(nextName, updatedAt, row.id);
       }
     }
-    db.prepare(`UPDATE decks SET description = ?, updated_at = ? WHERE id = ?`).run(description, updatedAt, deck.id);
+    db.prepare(`UPDATE decks SET description = ?, exam_date = ?, updated_at = ? WHERE id = ?`).run(
+      description,
+      exam,
+      updatedAt,
+      deck.id
+    );
   })();
-  return { ...deck, name, description, updatedAt };
+  return { ...deck, name, description, examDate: exam, updatedAt };
+}
+
+/**
+ * The nearest upcoming exam that applies to a deck: its own exam date or the
+ * closest ancestor's ("Medicina::Farmacología" inherits "Medicina").
+ */
+export function effectiveExamDate(decks: Array<Pick<Deck, 'name' | 'examDate'>>, name: string): string | null {
+  const byName = new Map(decks.map((deck) => [deck.name.toLowerCase(), deck.examDate]));
+  const parts = name.split(DECK_SEPARATOR);
+  for (let i = parts.length; i > 0; i--) {
+    const exam = byName.get(parts.slice(0, i).join(DECK_SEPARATOR).toLowerCase());
+    if (exam) return exam;
+  }
+  return null;
 }
 
 /** Delete a deck, its subdecks and all their cards. */

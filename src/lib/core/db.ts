@@ -1,13 +1,14 @@
 // ============================================================================
 // RecallForge — SQLite connection
 // ============================================================================
-// The server database is the single source of truth. The connection is opened
-// lazily (so tests can point DATABASE_PATH elsewhere first) and migrations run
+// A single local SQLite file is the source of truth. The connection is opened
+// lazily (so tests can point RECALLFORGE_DB elsewhere first) and migrations run
 // once per connection.
 // ============================================================================
 
 import Database from 'better-sqlite3';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { runMigrations } from './migrations';
 
@@ -15,7 +16,14 @@ export type DB = Database.Database;
 
 const globalForDb = globalThis as unknown as { __recallforgeDb?: DB };
 
-export function resolveDatabasePath(raw = process.env.DATABASE_PATH || 'data/recallforge.db'): string {
+/**
+ * Where your data lives. Default: ~/.recallforge/recallforge.db, shared by the
+ * web app and every agent. Override with RECALLFORGE_DB (or DATABASE_PATH).
+ */
+export function resolveDatabasePath(): string {
+  const raw = process.env.RECALLFORGE_DB || process.env.DATABASE_PATH;
+  if (!raw) return path.join(os.homedir(), '.recallforge', 'recallforge.db');
+  if (raw.startsWith('~/')) return path.join(os.homedir(), raw.slice(2));
   return path.isAbsolute(raw) ? raw : path.join(process.cwd(), raw);
 }
 

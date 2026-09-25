@@ -6,12 +6,12 @@ export const dynamic = 'force-dynamic';
 
 /**
  * POST /api/v1/study/grade
- * { cardId, rating: again|hard|good|easy|1-4, answer?, feedback?, durationMs?, deck?, tag? }
+ * { cardId, rating: again|hard|good|easy|1-4, answer?, feedback?, durationMs?, deck?, tag?, mode? }
  * Reschedules the card and returns the next question for the same deck/tag filter.
  */
-export const POST = route(async ({ req, user, via }) => {
-  const { cardId, deck, tag, ...grade } = await readJson(req);
+export const POST = route(async ({ req, user }) => {
+  const { cardId, deck, tag, mode, ...grade } = await readJson(req);
   if (typeof cardId !== 'string' || !cardId) throw badRequest('cardId is required');
-  const result = gradeCard(user.id, cardId, grade, via === 'session' ? 'web' : 'api');
-  return { result, next: nextCard(user.id, { deck, tag }) };
+  const result = gradeCard(user.id, cardId, grade, req.headers.get('x-recallforge-client') === 'web' ? 'web' : 'api');
+  return { result, next: nextCard(user.id, { deck, tag, mode }) };
 });

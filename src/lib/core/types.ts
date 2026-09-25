@@ -41,6 +41,8 @@ export interface Deck {
   id: string;
   name: string;
   description: string;
+  /** Exam day (YYYY-MM-DD) for this subject and its subdecks, if any. */
+  examDate: string | null;
   createdAt: string;
   updatedAt: string;
 }

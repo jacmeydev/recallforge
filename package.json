@@ -3,9 +3,12 @@
   "version": "2.0.0",
   "description": "Spaced-repetition memory (FSRS) that any AI agent can use for active-recall study, via MCP or REST",
   "scripts": {
-    "dev": "next dev --webpack --port 3030",
-    "build": "next build --webpack",
-    "start": "next start --port 3030",
+    "dev": "next dev --webpack -H 127.0.0.1 --port 3030",
+    "build": "next build --webpack && npm run build:cli",
+    "build:cli": "esbuild src/cli.ts --bundle --platform=node --format=esm --target=node20 --packages=external --outfile=dist/cli.mjs --banner:js=\"#!/usr/bin/env node\" --log-level=warning",
+    "prepare": "npm run build:cli",
+    "start": "next start -H 127.0.0.1 --port 3030",
+    "mcp": "node dist/cli.mjs mcp",
     "typecheck": "next typegen && tsc --noEmit",
     "lint": "eslint . --max-warnings=0",
     "test": "vitest run",
@@ -18,14 +21,12 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.1",
     "@radix-ui/react-slot": "^1.2.4",
-    "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.6.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "jszip": "^3.10.2",
     "mammoth": "^1.12.3",
     "next": "^16.1.6",
-    "next-auth": "^5.0.0-beta.30",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "tailwind-merge": "^3.5.0",
@@ -35,16 +36,22 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.2.1",
-    "@types/bcryptjs": "^2.4.6",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.4.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "esbuild": "^0.28.2",
     "eslint": "^9.39.4",
     "eslint-config-next": "^16.1.6",
     "postcss": "^8.5.8",
     "tailwindcss": "^4.2.1",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"
+  },
+  "bin": {
+    "recallforge": "dist/cli.mjs"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

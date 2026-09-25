@@ -15,16 +15,17 @@ const RATINGS: Array<{ rating: Rating; label: string; key: string; variant: 'aga
   { rating: 'easy', label: 'Fácil', key: '4', variant: 'easy' },
 ];
 
-export function ReviewSession({ deck, tag }: { deck?: string; tag?: string }) {
+export function ReviewSession({ deck, tag, mode }: { deck?: string; tag?: string; mode?: 'exam' }) {
   const [queue, setQueue] = useState<NextCardResult | null>(null);
   const [revealed, setRevealed] = useState<RevealResult | null>(null);
   const [answer, setAnswer] = useState('');
   const [reviewed, setReviewed] = useState(0);
+  const [lastGraded, setLastGraded] = useState<{ id: string; rating: Rating } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const shownAt = useRef(Date.now());
 
-  const filterQuery = new URLSearchParams({ ...(deck ? { deck } : {}), ...(tag ? { tag } : {}) }).toString();
+  const filterQuery = new URLSearchParams({ ...(deck ? { deck } : {}), ...(tag ? { tag } : {}), ...(mode ? { mode } : {}) }).toString();
 
   useEffect(() => {
     api<NextCardResult>(`/api/v1/study/next${filterQuery ? `?${filterQuery}` : ''}`)
@@ -61,12 +62,14 @@ export function ReviewSession({ deck, tag }: { deck?: string; tag?: string }) {
             durationMs: Date.now() - shownAt.current,
             deck,
             tag,
+            mode,
           },
         });
         setQueue(data.next);
         setRevealed(null);
         setAnswer('');
         setReviewed((n) => n + 1);
+        setLastGraded({ id: queue.card.id, rating });
         shownAt.current = Date.now();
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Error');
@@ -74,11 +77,36 @@ export function ReviewSession({ deck, tag }: { deck?: string; tag?: string }) {
         setBusy(false);
       }
     },
-    [queue, revealed, busy, answer, deck, tag]
+    [queue, revealed, busy, answer, deck, tag, mode]
   );
+
+  const undo = useCallback(async () => {
+    if (!lastGraded || busy) return;
+    setBusy(true);
+    try {
+      const data = await api<{ card: NonNullable<NextCardResult['card']> }>('/api/v1/study/undo', {
+        method: 'POST',
+        body: { cardId: lastGraded.id },
+      });
+      setQueue((current) => (current ? { ...current, card: data.card } : current));
+      setRevealed(null);
+      setAnswer('');
+      setReviewed((n) => Math.max(0, n - 1));
+      setLastGraded(null);
+      shownAt.current = Date.now();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error');
+    } finally {
+      setBusy(false);
+    }
+  }, [lastGraded, busy]);
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
+      if ((event.key === 'z' || event.key === 'Z') && !(event.target instanceof HTMLTextAreaElement)) {
+        void undo();
+        return;
+      }
       const typing = event.target instanceof HTMLTextAreaElement;
       if (!revealed && event.key === 'Enter' && (event.ctrlKey || event.metaKey || !typing)) {
         event.preventDefault();
@@ -97,7 +125,7 @@ export function ReviewSession({ deck, tag }: { deck?: string; tag?: string }) {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [revealed, reveal, grade]);
+  }, [revealed, reveal, grade, undo]);
 
   if (error) return <p className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{error}</p>;
   if (!queue) return <p className="text-sm text-muted-foreground">Cargando…</p>;
@@ -109,12 +137,25 @@ export function ReviewSession({ deck, tag }: { deck?: string; tag?: string }) {
       <div className="mx-auto max-w-xl space-y-4 rounded-xl border bg-card p-8 text-center">
         <h2 className="text-xl font-semibold">{reviewed > 0 ? `¡Listo! ${reviewed} tarjetas repasadas` : 'Nada pendiente'}</h2>
         <p className="text-sm text-muted-foreground">
-          {queue.nextDueAt ? `La próxima tarjeta vence ${formatDue(queue.nextDueAt)}.` : 'No hay tarjetas programadas.'}
-          {queue.message?.includes('limit') ? ' Alcanzaste el límite diario de tarjetas nuevas (ajústalo en Cuenta).' : ''}
+          {mode === 'exam'
+            ? queue.message
+            : queue.nextDueAt
+              ? `La próxima tarjeta vence ${formatDue(queue.nextDueAt)}.`
+              : 'No hay tarjetas programadas.'}
+          {mode !== 'exam' && queue.message?.includes('limit')
+            ? ' Alcanzaste el límite diario de tarjetas nuevas (ajústalo en Agentes y ajustes).'
+            : ''}
         </p>
-        <Button asChild variant="outline">
-          <Link href="/">Volver al inicio</Link>
-        </Button>
+        <div className="flex justify-center gap-2">
+          {lastGraded && (
+            <Button variant="ghost" onClick={() => void undo()} disabled={busy}>
+              Deshacer la última
+            </Button>
+          )}
+          <Button asChild variant="outline">
+            <Link href="/">Volver al inicio</Link>
+          </Button>
+        </div>
       </div>
     );
   }
@@ -132,6 +173,12 @@ export function ReviewSession({ deck, tag }: { deck?: string; tag?: string }) {
           <span className="text-red-600">{queue.remaining.learning}</span> ·{' '}
           <span className="text-emerald-600">{queue.remaining.review}</span> ·{' '}
           <span className="text-blue-600">{queue.remaining.new}</span> ({remaining} restantes)
+          {mode === 'exam' && <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-amber-900">modo examen</span>}
+          {lastGraded && (
+            <button className="ml-3 underline hover:text-foreground" onClick={() => void undo()} disabled={busy} title="Tecla Z">
+              Deshacer
+            </button>
+          )}
         </span>
       </div>
 

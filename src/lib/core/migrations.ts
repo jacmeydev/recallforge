@@ -142,6 +142,16 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    // Exam dates per subject and the card state before each review (for undo).
+    id: '2026_09_exams_and_undo',
+    up(db) {
+      db.exec(`
+        ALTER TABLE decks ADD COLUMN exam_date TEXT;
+        ALTER TABLE review_logs ADD COLUMN snapshot TEXT;
+      `);
+    },
+  },
 ];
 
 export function runMigrations(db: DB): string[] {

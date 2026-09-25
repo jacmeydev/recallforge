@@ -3,11 +3,10 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { hashApiKey } from '@/lib/server/api-keys';
 import { closeDb, getDb } from '@/lib/core/db';
 import { getCard } from '@/lib/core/cards';
 import { listDecks } from '@/lib/core/decks';
-import { findUserByApiKey } from '@/lib/core/users';
+import { getLocalUser } from '@/lib/core/users';
 
 // Subset of the v1 schema (Anki-style notes + templates synced from the browser).
 const LEGACY_SCHEMA = `
@@ -108,12 +107,12 @@ function seedLegacyDatabase(file: string) {
 afterEach(() => closeDb());
 
 describe('legacy v1 database conversion', () => {
-  it('archives v1 tables and converts decks, cards, FSRS state, history and API keys', () => {
+  it('archives v1 tables and converts decks, cards, FSRS state and history; the v1 account becomes the local learner', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'recallforge-legacy-'));
     const file = path.join(dir, 'legacy.db');
     seedLegacyDatabase(file);
     closeDb();
-    process.env.DATABASE_PATH = file;
+    process.env.RECALLFORGE_DB = file;
     const db = getDb();
 
     const tables = (db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as Array<{ name: string }>).map((t) => t.name);
@@ -147,9 +146,8 @@ describe('legacy v1 database conversion', () => {
     const logs = db.prepare(`SELECT card_id, rating, state, duration_ms, source FROM review_logs`).all();
     expect(logs).toEqual([{ card_id: 'c1', rating: 'good', state: 'learning', duration_ms: 4200, source: 'legacy' }]);
 
-    const user = db.prepare(`SELECT api_key, api_key_hash FROM users WHERE id = 'u1'`).get() as { api_key: string | null; api_key_hash: string };
+    const user = db.prepare(`SELECT api_key FROM users WHERE id = 'u1'`).get() as { api_key: string | null };
     expect(user.api_key).toBeNull();
-    expect(user.api_key_hash).toBe(hashApiKey('rf_legacy_plaintext'));
-    expect(findUserByApiKey('rf_legacy_plaintext')?.id).toBe('u1');
+    expect(getLocalUser().id).toBe('u1');
   });
 });

@@ -94,7 +94,7 @@ export function Dashboard() {
         <CardContent className="space-y-4">
           {decks && decks.length === 0 && (
             <p className="text-sm text-muted-foreground">
-              Aún no tienes mazos. Crea uno aquí o conecta tu agente (en <Link className="underline" href="/account">Cuenta y agentes</Link>) y
+              Aún no tienes materias. Crea una aquí o conecta tu agente (en <Link className="underline" href="/settings">Agentes y ajustes</Link>) y
               pídele que genere tarjetas de tus apuntes.
             </p>
           )}

@@ -9,17 +9,15 @@ import * as gradeRoute from '@/app/api/v1/study/grade/route';
 import * as statsRoute from '@/app/api/v1/stats/route';
 import * as settingsRoute from '@/app/api/v1/settings/route';
 import * as exportRoute from '@/app/api/v1/export/route';
-import * as apiKeyRoute from '@/app/api/v1/account/api-key/route';
-import * as registerRoute from '@/app/api/auth/register/route';
 import * as mcpRoute from '@/app/api/mcp/route';
 import * as documentsRoute from '@/app/api/v1/documents/route';
 import * as documentReadRoute from '@/app/api/v1/documents/[id]/read/route';
 import * as approveRoute from '@/app/api/v1/cards/approve/route';
 import { buildPdf, buildPptx } from './fixtures';
-import { createTestUser, useFreshDatabase } from './helpers';
+import { useFreshDatabase } from './helpers';
 
 const BASE = 'http://localhost:3030';
-let apiKey: string;
+const TOKEN = 'correct-horse-battery-staple';
 
 type RouteHandler = (req: Request, ctx: { params: Promise<never> }) => Promise<Response>;
 
@@ -29,7 +27,7 @@ function call(
   init: { method?: string; body?: unknown; params?: Record<string, string>; key?: string | null } = {}
 ) {
   const headers: Record<string, string> = { 'content-type': 'application/json' };
-  const key = init.key === undefined ? apiKey : init.key;
+  const key = init.key ?? null;
   if (key) headers.authorization = `Bearer ${key}`;
   const req = new Request(`${BASE}${path}`, {
     method: init.method ?? 'GET',
@@ -43,25 +41,29 @@ async function json(res: Response) {
   return { status: res.status, body: await res.json() };
 }
 
-beforeEach(async () => {
+beforeEach(() => {
   useFreshDatabase();
-  apiKey = (await createTestUser()).apiKey;
+  delete process.env.RECALLFORGE_TOKEN;
 });
 
 describe('REST API v1', () => {
-  it('rejects missing or wrong API keys', async () => {
-    expect((await call(decksRoute.GET, '/api/v1/decks', { key: null })).status).toBe(401);
-    const res = await json(await call(decksRoute.GET, '/api/v1/decks', { key: 'rf_wrong' }));
-    expect(res.status).toBe(401);
-    expect(res.body.error.code).toBe('unauthorized');
+  it('needs no credentials locally', async () => {
+    expect((await call(decksRoute.GET, '/api/v1/decks')).status).toBe(200);
   });
 
-  it('accepts the key via X-API-Key header and ?key= query', async () => {
+  it('requires the token everywhere when RECALLFORGE_TOKEN is set', async () => {
+    process.env.RECALLFORGE_TOKEN = TOKEN;
     const noParams = { params: Promise.resolve({}) };
-    const viaHeader = await decksRoute.GET(new Request(`${BASE}/api/v1/decks`, { headers: { 'x-api-key': apiKey } }), noParams);
+    const res = await json(await call(decksRoute.GET, '/api/v1/decks'));
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('unauthorized');
+    expect((await call(decksRoute.GET, '/api/v1/decks', { key: 'wrong-token-of-same-size-xxx' })).status).toBe(401);
+    expect((await call(decksRoute.GET, '/api/v1/decks', { key: TOKEN })).status).toBe(200);
+    const viaHeader = await decksRoute.GET(new Request(`${BASE}/api/v1/decks`, { headers: { 'x-api-key': TOKEN } }), noParams);
     expect(viaHeader.status).toBe(200);
-    const viaQuery = await decksRoute.GET(new Request(`${BASE}/api/v1/decks?key=${apiKey}`), noParams);
-    expect(viaQuery.status).toBe(200);
+    expect((await decksRoute.GET(new Request(`${BASE}/api/v1/decks?key=${TOKEN}`), noParams)).status).toBe(200);
+    const viaCookie = await decksRoute.GET(new Request(`${BASE}/api/v1/decks`, { headers: { cookie: `a=b; rf_token=${TOKEN}` } }), noParams);
+    expect(viaCookie.status).toBe(200);
   });
 
   it('runs a full study loop: add → next → reveal → grade', async () => {
@@ -128,7 +130,7 @@ describe('REST API v1', () => {
     expect((await call(deckRoute.DELETE, '/api/v1/decks/nope', { method: 'DELETE', params: { id: 'nope' } })).status).toBe(404);
   });
 
-  it('reads and validates settings, exports data, and reserves key rotation for the web app', async () => {
+  it('reads and validates settings and exports data', async () => {
     const updated = await json(await call(settingsRoute.PATCH, '/api/v1/settings', { method: 'PATCH', body: { newCardsPerDay: 50 } }));
     expect(updated.body.settings.newCardsPerDay).toBe(50);
     expect((await call(settingsRoute.PATCH, '/api/v1/settings', { method: 'PATCH', body: { newCardsPerDay: -1 } })).status).toBe(400);
@@ -137,25 +139,6 @@ describe('REST API v1', () => {
     expect(exported.headers.get('content-disposition')).toMatch(/attachment/);
     expect((await exported.json()).format).toBe('recallforge-export');
 
-    expect((await call(apiKeyRoute.POST, '/api/v1/account/api-key', { method: 'POST' })).status).toBe(403);
-  });
-
-  it('closes registration after the first account unless ALLOW_REGISTRATION=true', async () => {
-    const register = () =>
-      registerRoute.POST(
-        new Request(`${BASE}/api/auth/register`, {
-          method: 'POST',
-          body: JSON.stringify({ email: `x${Date.now()}@example.com`, password: 'longenough', name: 'X' }),
-        })
-      );
-    expect((await registerRoute.GET().json()).open).toBe(false);
-    expect((await register()).status).toBe(403);
-    process.env.ALLOW_REGISTRATION = 'true';
-    try {
-      expect((await register()).status).toBe(201);
-    } finally {
-      delete process.env.ALLOW_REGISTRATION;
-    }
   });
 
   it('uploads a file, reads it and approves the drafts made from it', async () => {
@@ -164,7 +147,7 @@ describe('REST API v1', () => {
     form.append('deck', 'Medicina::Bioquímica');
     const upload = await json(
       await documentsRoute.POST(
-        new Request(`${BASE}/api/v1/documents`, { method: 'POST', headers: { authorization: `Bearer ${apiKey}` }, body: form }),
+        new Request(`${BASE}/api/v1/documents`, { method: 'POST', body: form }),
         { params: Promise.resolve({}) }
       )
     );
@@ -188,7 +171,6 @@ describe('REST API v1', () => {
     const unsupported = await documentsRoute.POST(
       new Request(`${BASE}/api/v1/documents`, {
         method: 'POST',
-        headers: { authorization: `Bearer ${apiKey}` },
         body: (() => {
           const f = new FormData();
           f.append('file', new File(['x'], 'foto.png'));
@@ -199,27 +181,12 @@ describe('REST API v1', () => {
     );
     expect(unsupported.status).toBe(400);
   });
-
-  it('registers the first account and returns the API key once', async () => {
-    useFreshDatabase();
-    const res = await json(
-      await registerRoute.POST(
-        new Request(`${BASE}/api/auth/register`, {
-          method: 'POST',
-          body: JSON.stringify({ email: 'Nueva@Example.com', password: 'longenough', name: 'Nueva', timezone: 'America/Lima' }),
-        })
-      )
-    );
-    expect(res.status).toBe(201);
-    expect(res.body.apiKey).toMatch(/^rf_/);
-    expect(res.body.user).toMatchObject({ email: 'nueva@example.com', timezone: 'America/Lima' });
-  });
 });
 
 describe('MCP endpoint', () => {
   let rpcId = 0;
 
-  async function rpc(method: string, params: Record<string, unknown> = {}, key: string | null = apiKey) {
+  async function rpc(method: string, params: Record<string, unknown> = {}, key: string | null = null) {
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       accept: 'application/json, text/event-stream',
@@ -237,8 +204,12 @@ describe('MCP endpoint', () => {
     return { isError: Boolean(body.result.isError), text, data: body.result.isError ? null : JSON.parse(text) };
   }
 
-  it('requires authentication', async () => {
-    expect((await rpc('tools/list', {}, null)).status).toBe(401);
+  it('requires the token only when RECALLFORGE_TOKEN is set', async () => {
+    expect((await rpc('tools/list')).status).toBe(200);
+    process.env.RECALLFORGE_TOKEN = TOKEN;
+    expect((await rpc('tools/list')).status).toBe(401);
+    expect((await rpc('tools/list', {}, TOKEN)).status).toBe(200);
+    delete process.env.RECALLFORGE_TOKEN;
   });
 
   it('initializes with the study protocol as server instructions', async () => {
@@ -263,6 +234,7 @@ describe('MCP endpoint', () => {
       'delete_deck',
       'delete_document',
       'get_next_card',
+      'get_progress_map',
       'get_stats',
       'grade_card',
       'list_decks',
@@ -270,6 +242,7 @@ describe('MCP endpoint', () => {
       'read_document',
       'reveal_answer',
       'search_cards',
+      'undo_last_review',
       'update_card',
       'update_deck',
       'update_settings',

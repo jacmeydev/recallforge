@@ -1,12 +1,12 @@
 import { AppShell } from '@/components/app/app-shell';
-import { DocumentsView } from '@/components/app/documents-view';
+import { ProgressView } from '@/components/app/progress-view';
 
 export const dynamic = 'force-dynamic';
 
-export default function DocumentsPage() {
+export default function ProgressPage() {
   return (
     <AppShell>
-      <DocumentsView />
+      <ProgressView />
     </AppShell>
   );
 }

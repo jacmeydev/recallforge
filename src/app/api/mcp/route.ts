@@ -1,8 +1,8 @@
 // ============================================================================
 // RecallForge — MCP endpoint (Streamable HTTP, stateless, JSON responses)
 // ============================================================================
-// POST /api/mcp with "Authorization: Bearer rf_..." (or ?key=rf_... for
-// clients that cannot send headers).
+// POST /api/mcp. Local: no auth. With RECALLFORGE_TOKEN set: "Authorization:
+// Bearer <token>" (or ?key=<token> for clients that cannot send headers).
 // ============================================================================
 
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
@@ -15,10 +15,10 @@ export const dynamic = 'force-dynamic';
 
 export async function POST(req: Request) {
   try {
-    const auth = await authenticate(req);
-    if (!auth) return unauthorized();
+    const user = authenticate(req);
+    if (!user) return unauthorized();
 
-    const server = createMcpServer(auth.user);
+    const server = createMcpServer(user);
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,

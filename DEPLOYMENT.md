@@ -1,59 +1,39 @@
-# Despliegue de RecallForge
+# Acceso remoto (opcional)
 
-RecallForge es un único proceso Node.js con una base SQLite. Solo necesitas persistir la carpeta `data/`.
+RecallForge está pensado para usarse en tu propio ordenador: los agentes locales (Claude Code, Claude Desktop, Cursor, VS Code, Codex…) lo arrancan por stdio y la web solo escucha en `127.0.0.1`. No necesitas nada de esta guía para eso.
 
-## Variables
+Solo hace falta si quieres usarlo desde un **agente en la nube** (conectores personalizados de Claude.ai o ChatGPT) o desde **otro dispositivo**.
 
-```bash
-AUTH_SECRET=<openssl rand -base64 32>
-AUTH_TRUST_HOST=true
-DATABASE_PATH=/app/data/recallforge.db
-PORT=3030
-NODE_ENV=production
-BASE_URL=https://tu-dominio        # opcional: URL pública que verán tus agentes
-ALLOW_REGISTRATION=false           # solo la primera cuenta puede registrarse
-```
+## 1. Define un token
 
-## Opción A: Node.js
+Con `RECALLFORGE_TOKEN` definido, la web, la API REST y el MCP por HTTP exigen ese token en cada petición:
 
 ```bash
-npm ci
+export RECALLFORGE_TOKEN="$(openssl rand -hex 32)"
 npm run build
-npm run start          # usa systemd, pm2 o similar en producción
-curl http://127.0.0.1:3030/api/health
+node dist/cli.mjs ui
 ```
 
-## Opción B: Docker
+- Agentes: `Authorization: Bearer <token>` (o `X-API-Key: <token>`).
+- Clientes que no permiten cabeceras (conectores de Claude.ai o ChatGPT): añade `?key=<token>` a la URL, por ejemplo `https://tu-tunel.example/api/mcp?key=<token>`.
+- Navegador: abre la web una vez con `?key=<token>` y se guardará en una cookie.
 
-```bash
-docker build -t recallforge .
-docker run -d --name recallforge --restart unless-stopped \
-  --user "$(id -u):$(id -g)" \
-  -p 3030:3030 \
-  -v "$(pwd)/data:/app/data" \
-  -e AUTH_SECRET="cambia-esto" \
-  -e AUTH_TRUST_HOST=true \
-  -e DATABASE_PATH=/app/data/recallforge.db \
-  recallforge
-```
+## 2. Expón el puerto 3030 por HTTPS
 
-Usa `--user` con tu UID/GID si montas una carpeta del host, para que SQLite pueda escribir.
+Elige una opción:
 
-## Acceso desde agentes remotos
+- **Tailscale** (solo tus dispositivos): `tailscale serve 3030`. Para que llegue un servicio en la nube: `tailscale funnel 3030`.
+- **Cloudflare Tunnel**: `cloudflared tunnel --url http://127.0.0.1:3030`.
+- Un proxy inverso con certificado (Caddy, nginx).
 
-Los agentes en la nube (Claude.ai, ChatGPT) necesitan una URL **HTTPS pública**. Opciones sencillas:
+Define `BASE_URL` con la dirección pública para que *Agentes y ajustes* muestre la configuración correcta.
 
-- **Tailscale Funnel**: `tailscale funnel 3030` (o `tailscale serve 3030` si el agente también está en tu tailnet).
-- **Cloudflare Tunnel**: `cloudflared tunnel --url http://localhost:3030`.
-- Un proxy inverso (Caddy, nginx) con certificado.
+## 3. Conecta el agente remoto
 
-Los agentes locales (Claude Code, Cursor, OpenClaw en la misma máquina) pueden usar `http://localhost:3030`.
+La URL del servidor MCP es `https://<tu-dirección>/api/mcp`, con el token en la cabecera o en `?key=`.
 
-## Copias de seguridad
+## Seguridad
 
-- Exporta desde la web (Cuenta → Exportar JSON) o `GET /api/v1/export`.
-- O copia la base con SQLite en caliente: `sqlite3 data/recallforge.db ".backup data/backup.db"`.
-
-## Actualizar desde la versión 1
-
-Haz una copia de `data/recallforge.db` y arranca la nueva versión: la migración convierte tus tarjetas al formato pregunta/respuesta (manteniendo estado FSRS e historial) y renombra las tablas antiguas a `legacy_*`, que puedes borrar cuando compruebes que todo está bien.
+- No expongas RecallForge **sin** `RECALLFORGE_TOKEN`: cualquiera con la URL podría leer y cambiar tus tarjetas.
+- Si compartes el token por error, cambia su valor y reinicia la web.
+- Las peticiones a la API tienen un límite (`RATE_LIMIT_API_MAX`, 120 por minuto por IP).

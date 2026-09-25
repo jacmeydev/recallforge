@@ -7,41 +7,24 @@ import { Input } from '@/components/ui/input';
 import { api } from '@/lib/api/client';
 import type { UserSettings } from '@/lib/core/settings';
 
-interface Account {
-  email: string;
-  name: string;
-  apiKeyPreview: string | null;
-  apiKeyLastRotatedAt: string | null;
+export interface ConnectionInfo {
+  /** Absolute path of the stdio MCP entry point (dist/cli.mjs). */
+  cliPath: string;
+  origin: string;
+  databasePath: string;
+  tokenRequired: boolean;
 }
 
-export function AccountView({ origin }: { origin: string }) {
-  const [account, setAccount] = useState<Account | null>(null);
+export function SettingsView({ connection }: { connection: ConnectionInfo }) {
   const [settings, setSettings] = useState<UserSettings | null>(null);
-  const [apiKey, setApiKey] = useState('');
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
 
   useEffect(() => {
-    Promise.all([api<{ account: Account }>('/api/v1/account'), api<{ settings: UserSettings }>('/api/v1/settings')])
-      .then(([a, s]) => {
-        setAccount(a.account);
-        setSettings(s.settings);
-      })
+    api<{ settings: UserSettings }>('/api/v1/settings')
+      .then((data) => setSettings(data.settings))
       .catch((err) => setError(err.message));
   }, []);
-
-  async function rotateKey() {
-    if (account?.apiKeyPreview && !confirm('La clave actual dejará de funcionar en todos tus agentes. ¿Continuar?')) return;
-    try {
-      const result = await api<{ apiKey: string; apiKeyPreview: string; rotatedAt: string }>('/api/v1/account/api-key', {
-        method: 'POST',
-      });
-      setApiKey(result.apiKey);
-      setAccount((current) => current && { ...current, apiKeyPreview: result.apiKeyPreview, apiKeyLastRotatedAt: result.rotatedAt });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error');
-    }
-  }
 
   async function saveSettings(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -73,98 +56,66 @@ export function AccountView({ origin }: { origin: string }) {
     }
   }
 
-  const key = apiKey || 'rf_TU_CLAVE';
-  const mcpUrl = `${origin}/api/mcp`;
+  const { cliPath, origin, tokenRequired } = connection;
+  const token = tokenRequired ? 'TU_TOKEN' : '';
+  const httpHeaders = tokenRequired ? { Authorization: `Bearer ${token}` } : undefined;
   const snippets = [
     {
       title: 'Claude Code',
-      code: `claude mcp add --transport http recallforge ${mcpUrl} --header "Authorization: Bearer ${key}"`,
+      code: `claude mcp add recallforge -- node "${cliPath}" mcp`,
     },
     {
-      title: 'Cursor, VS Code, Windsurf y clientes con MCP remoto',
-      code: JSON.stringify({ mcpServers: { recallforge: { url: mcpUrl, headers: { Authorization: `Bearer ${key}` } } } }, null, 2),
+      title: 'Claude Desktop, Cursor, VS Code, Windsurf, Codex y otros clientes MCP (archivo de configuración)',
+      code: JSON.stringify({ mcpServers: { recallforge: { command: 'node', args: [cliPath, 'mcp'] } } }, null, 2),
     },
     {
-      title: 'Claude Desktop y clientes solo-stdio (vía mcp-remote)',
+      title: 'Agentes que se conectan por HTTP (mientras esta web esté abierta)',
       code: JSON.stringify(
-        {
-          mcpServers: {
-            recallforge: {
-              command: 'npx',
-              args: ['-y', 'mcp-remote', mcpUrl, '--header', 'Authorization:${AUTH_HEADER}'],
-              env: { AUTH_HEADER: `Bearer ${key}` },
-            },
-          },
-        },
+        { mcpServers: { recallforge: { url: `${origin}/api/mcp`, ...(httpHeaders ? { headers: httpHeaders } : {}) } } },
         null,
         2
       ),
     },
     {
-      title: 'Conectores sin cabeceras (Claude.ai, ChatGPT): URL con la clave — solo sobre HTTPS',
-      code: `${mcpUrl}?key=${key}`,
-    },
-    {
       title: 'REST (OpenClaw, n8n, scripts)',
-      code: `curl -H "Authorization: Bearer ${key}" ${origin}/api/v1/study/next\n# Índice de endpoints: ${origin}/api/v1`,
+      code: `curl ${tokenRequired ? `-H "Authorization: Bearer ${token}" ` : ''}${origin}/api/v1/study/next\n# Índice de endpoints: ${origin}/api/v1`,
     },
   ];
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold">Cuenta y agentes</h1>
+      <h1 className="text-2xl font-bold">Agentes y ajustes</h1>
       {error && <p className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Clave de API</CardTitle>
-          <CardDescription>
-            Tus agentes usan esta clave para leer y repasar tus tarjetas. Trátala como una contraseña.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {apiKey ? (
-            <div className="space-y-2">
-              <p className="text-sm font-medium text-amber-700">Cópiala ahora: no se volverá a mostrar.</p>
-              <div className="flex gap-2">
-                <code className="flex-1 break-all rounded-lg bg-muted p-3 text-xs">{apiKey}</code>
-                <Button variant="outline" onClick={() => void navigator.clipboard.writeText(apiKey)}>
-                  Copiar
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">
-              Clave actual: <code>{account?.apiKeyPreview ?? 'ninguna'}</code>
-              {account?.apiKeyLastRotatedAt && ` · creada ${new Date(account.apiKeyLastRotatedAt).toLocaleDateString()}`}
-            </p>
-          )}
-          <Button variant={apiKey ? 'outline' : 'default'} onClick={() => void rotateKey()}>
-            {account?.apiKeyPreview ? 'Generar nueva clave' : 'Generar clave'}
-          </Button>
-        </CardContent>
-      </Card>
 
       <Card>
         <CardHeader>
           <CardTitle>Conecta tu agente</CardTitle>
           <CardDescription>
-            RecallForge es un servidor MCP y una API REST. Conéctalo y pide, por ejemplo: «hazme tarjetas de este capítulo» o
-            «pregúntame lo pendiente de Farmacología».
+            RecallForge es un servidor MCP local: tu agente lo arranca solo, sin cuentas ni claves. Después pídele, por ejemplo,
+            «hazme tarjetas de este PDF» o «pregúntame lo pendiente de Farmacología».
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {snippets.map((snippet) => (
             <div key={snippet.title} className="space-y-1">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-2">
                 <p className="text-sm font-medium">{snippet.title}</p>
-                <button className="text-xs text-muted-foreground hover:text-foreground" onClick={() => void navigator.clipboard.writeText(snippet.code)}>
+                <button
+                  className="text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() => void navigator.clipboard.writeText(snippet.code)}
+                >
                   Copiar
                 </button>
               </div>
               <pre className="overflow-x-auto rounded-lg bg-muted p-3 text-xs">{snippet.code}</pre>
             </div>
           ))}
+          <p className="text-xs text-muted-foreground">
+            Tus datos están en <code>{connection.databasePath}</code>. La web y los agentes comparten ese archivo.
+            {tokenRequired
+              ? ' Este servidor exige el token RECALLFORGE_TOKEN.'
+              : ' Para usarlo desde un agente en la nube, expón el servidor con un túnel y define RECALLFORGE_TOKEN (ver README).'}
+          </p>
         </CardContent>
       </Card>
 
@@ -213,9 +164,7 @@ export function AccountView({ origin }: { origin: string }) {
       <Card>
         <CardHeader>
           <CardTitle>Tus datos</CardTitle>
-          <CardDescription>
-            {account ? `${account.name} · ${account.email}. ` : ''}Descarga todos tus mazos, tarjetas e historial en JSON.
-          </CardDescription>
+          <CardDescription>Descarga todas tus materias, tarjetas, documentos e historial en JSON.</CardDescription>
         </CardHeader>
         <CardContent>
           <Button asChild variant="outline">
