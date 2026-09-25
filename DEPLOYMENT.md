@@ -1,198 +1,59 @@
-# RecallForge Deployment Guide
+# Despliegue de RecallForge
 
-Proyecto oficial de Vibecoding.
+RecallForge es un único proceso Node.js con una base SQLite. Solo necesitas persistir la carpeta `data/`.
 
-## Objetivo actual
-
-Este documento describe el despliegue recomendado para `beta privada`.
-
-Estado validado en esta pasada:
-- `docker build` pasa (si eliges contenedores)
-- contenedor de producción responde `200` en `/api/health`
-- Tailscale Serve apunta correctamente a `3030`
-- `typecheck`, `lint`, `test`, `build`, `db:rehearse` y `test:e2e` pasan
-
-## Variables mínimas
-
-Usa como base [.env.example](/home/universidad/recallforge/.env.example).
-
-Mínimo recomendado:
+## Variables
 
 ```bash
-AUTH_SECRET=<secreto-largo>
+AUTH_SECRET=<openssl rand -base64 32>
 AUTH_TRUST_HOST=true
 DATABASE_PATH=/app/data/recallforge.db
-NODE_ENV=production
 PORT=3030
-BASE_URL=https://tu-dominio-o-tailnet
-RATE_LIMIT_AUTH_MAX=20
-RATE_LIMIT_API_MAX=120
-LOG_LEVEL=info
+NODE_ENV=production
+BASE_URL=https://tu-dominio        # opcional: URL pública que verán tus agentes
+ALLOW_REGISTRATION=false           # solo la primera cuenta puede registrarse
 ```
 
-## Opciones de despliegue
-
-Puedes elegir el método que prefieras:
-- Node.js directo en host (sin Docker)
-- Docker
-
-### Opción A: Node.js directo (sin Docker)
+## Opción A: Node.js
 
 ```bash
 npm ci
 npm run build
-npm run start
-```
-
-Health check:
-
-```bash
+npm run start          # usa systemd, pm2 o similar en producción
 curl http://127.0.0.1:3030/api/health
 ```
 
-Para producción, usa un process manager (por ejemplo `systemd`, `pm2` o equivalente).
-
-### Opción B: Docker
-
-#### 1. Construir imagen
+## Opción B: Docker
 
 ```bash
-docker build -t recallforge:local .
-```
-
-#### 2. Levantar contenedor
-
-Si vas a montar la carpeta `data` del host, usa el UID/GID del usuario real para evitar SQLite readonly:
-
-```bash
-docker run -d \
-  --name recallforge \
-  --restart unless-stopped \
+docker build -t recallforge .
+docker run -d --name recallforge --restart unless-stopped \
   --user "$(id -u):$(id -g)" \
   -p 3030:3030 \
   -v "$(pwd)/data:/app/data" \
-  -e DATABASE_PATH=/app/data/recallforge.db \
   -e AUTH_SECRET="cambia-esto" \
   -e AUTH_TRUST_HOST=true \
-  -e PORT=3030 \
-  -e NODE_ENV=production \
-  recallforge:local
+  -e DATABASE_PATH=/app/data/recallforge.db \
+  recallforge
 ```
 
-#### 3. Verificar health
+Usa `--user` con tu UID/GID si montas una carpeta del host, para que SQLite pueda escribir.
 
-```bash
-curl http://127.0.0.1:3030/api/health
-```
+## Acceso desde agentes remotos
 
-Debe responder algo como:
+Los agentes en la nube (Claude.ai, ChatGPT) necesitan una URL **HTTPS pública**. Opciones sencillas:
 
-```json
-{
-  "status": "ok",
-  "service": "recallforge",
-  "schema": {
-    "pendingCount": 0,
-    "replayBacklog": 0
-  }
-}
-```
+- **Tailscale Funnel**: `tailscale funnel 3030` (o `tailscale serve 3030` si el agente también está en tu tailnet).
+- **Cloudflare Tunnel**: `cloudflared tunnel --url http://localhost:3030`.
+- Un proxy inverso (Caddy, nginx) con certificado.
 
-## HTTPS
+Los agentes locales (Claude Code, Cursor, OpenClaw en la misma máquina) pueden usar `http://localhost:3030`.
 
-### Opción rápida privada: Tailscale Serve
+## Copias de seguridad
 
-```bash
-tailscale serve --bg 3030
-tailscale serve status
-```
+- Exporta desde la web (Cuenta → Exportar JSON) o `GET /api/v1/export`.
+- O copia la base con SQLite en caliente: `sqlite3 data/recallforge.db ".backup data/backup.db"`.
 
-La URL quedará algo como:
+## Actualizar desde la versión 1
 
-```text
-https://<host>.ts.net
-```
-
-Esto ya fue validado para RecallForge.
-
-### Opción pública
-
-Usa reverse proxy con TLS real:
-- Caddy
-- nginx
-- Cloudflare Tunnel
-- Tailscale Funnel si aplica a tu caso
-
-## Pruebas de publicación
-
-Antes de publicar una nueva build, corre:
-
-```bash
-npm run typecheck
-npm run lint
-npm test
-npm run build
-npm run db:rehearse
-npm run test:e2e
-```
-
-Si eliges Docker, añade:
-
-```bash
-docker build -t recallforge:local .
-```
-
-Notas:
-- `phase3-http.test.ts` ya no necesita un server manual; levanta un Next gestionado con DB temporal.
-- `test:e2e` corre Playwright dentro de Docker y valida login, settings, study, Copilot/OpenClaw y optimizer.
-
-## Backup, rehearsal y rollback
-
-RecallForge ya tiene rehearsal de migraciones:
-
-```bash
-npm run db:rehearse
-```
-
-Rollback operacional:
-- el mecanismo principal sigue siendo restaurar un backup SQLite previo
-- no confíes en “down migrations” como única red de seguridad
-
-Respaldos esperados:
-- `data/backups/*.db`
-
-## Observabilidad mínima disponible
-
-`/api/health` expone:
-- estado del servicio
-- estado de DB
-- versión de schema
-- migraciones pendientes
-- replay backlog
-- snapshot de observabilidad en memoria
-
-La pantalla [settings/page.tsx](/home/universidad/recallforge/src/app/(app)/settings/page.tsx) ya muestra señales rápidas de salud.
-
-## Integración agent/OpenClaw
-
-En producción privada ya están listas estas rutas:
-
-- `/api/agent/*`
-- `/api/copilot/*`
-- `/api/openclaw/drafts`
-- `/api/openclaw/review-candidates`
-- `/api/openclaw/improvement-drafts`
-
-No se recomienda que agentes escriban directo a DB o Dexie.
-La integración correcta es HTTP autenticado.
-
-## Riesgos aceptados para beta privada
-
-No bloquean el deploy actual, pero siguen abiertos:
-- falta soak largo multi-dispositivo
-- la calidad académica depende de buenos `curriculum_links`
-- la observabilidad es útil, pero todavía no equivale a APM/alerting completo
-
-## Veredicto
-
-RecallForge queda `lista para beta privada` con despliegue flexible (Node.js directo o Docker) + HTTPS.
+Haz una copia de `data/recallforge.db` y arranca la nueva versión: la migración convierte tus tarjetas al formato pregunta/respuesta (manteniendo estado FSRS e historial) y renombra las tablas antiguas a `legacy_*`, que puedes borrar cuando compruebes que todo está bien.

@@ -79,8 +79,3 @@ export function checkRateLimit(key: string, config: RateLimitConfig): RateLimitR
   const retryAfterMs = Math.ceil((1 - entry.tokens) / refillRate);
   return { allowed: false, remaining: 0, retryAfterMs };
 }
-
-/** Reset all buckets (for testing) */
-export function _resetRateLimits(): void {
-  buckets.clear();
-}

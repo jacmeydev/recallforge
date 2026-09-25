@@ -3,17 +3,17 @@ import path from 'path';
 
 export default defineConfig({
   test: {
-    globals: true,
-    environment: 'jsdom',
-    include: ['src/**/*.test.{ts,tsx}'],
-    setupFiles: ['src/__tests__/setup-env.ts'],
-    // The suite uses a shared SQLite test database and a managed Next server for HTTP probes.
-    // Running test files in parallel still introduces artificial "database is locked" flakiness.
+    environment: 'node',
+    include: ['tests/**/*.test.ts'],
+    // Tests share one SQLite connection (re-pointed per test), so run files sequentially.
     fileParallelism: false,
+    // Let Vite resolve next-auth's extensionless "next/server" import.
+    server: { deps: { inline: ['next-auth', '@auth/core'] } },
   },
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      'next/server': 'next/server.js',
     },
   },
 });
