@@ -81,12 +81,19 @@ export interface QuestionCard {
   state: CardState;
   reps: number;
   lapses: number;
+  /**
+   * The learner has seen this card several times: ask the same fact with
+   * different wording or from another angle so it is recalled, not recognised.
+   */
+  suggestRephrase: boolean;
 }
 
 export interface Card extends QuestionCard {
   back: string;
   explanation: string;
   source: string;
+  /** Exact passage of the source the card comes from. */
+  excerpt: string;
   dueAt: string;
   stability: number;
   difficulty: number;
@@ -118,6 +125,7 @@ export interface CardRow {
   back: string;
   explanation: string;
   source: string;
+  excerpt: string;
   tags: string;
   state: CardState;
   due_at: string;

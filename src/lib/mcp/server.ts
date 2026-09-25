@@ -8,26 +8,27 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { addCards, deleteCards, searchCards, updateCard } from '@/lib/core/cards';
-import { approveCards } from '@/lib/core/cards';
+import { addCards, approveCards, deleteCards, listRevisions, revertRevision, searchCards, updateCard } from '@/lib/core/cards';
 import { deleteDeck, listDecks, updateDeck } from '@/lib/core/decks';
 import { deleteDocument, getDocument, importDocumentFile, importDocumentText, listDocuments, readDocument } from '@/lib/core/documents';
 import { AppError } from '@/lib/core/errors';
+import { explainCard } from '@/lib/core/explain';
+import { importData } from '@/lib/core/import';
 import { updateSettings } from '@/lib/core/settings';
 import { getStats } from '@/lib/core/stats';
 import { getProgressMap } from '@/lib/core/progress';
-import { gradeCard, nextCard, revealCard, undoLastReview } from '@/lib/core/study';
+import { correctLastReview, gradeCard, nextCard, revealCard, undoLastReview } from '@/lib/core/study';
 import type { AuthUser } from '@/lib/core/types';
 
-export const MCP_SERVER_VERSION = '2.0.0';
+export const MCP_SERVER_VERSION = '3.0.0';
 
 export const STUDY_PROTOCOL = `RecallForge is the learner's spaced-repetition memory (FSRS scheduler). Use it to run active-recall study sessions and to turn study material into flashcards. Talk to the learner in their language.
 
 STUDY SESSION
-1. get_next_card (optionally filtered by deck or tag) returns only the question. Ask the learner the \`front\` text. You may rephrase lightly for flow, but never add hints, options or any part of the answer.
+1. get_next_card (optionally filtered by deck or tag) returns only the question. Ask the learner the \`front\` text. You may rephrase lightly for flow, but never add hints, options or any part of the answer. When the card has suggestRephrase: true the learner has seen it many times: ask the same fact with different wording or from another angle (reverse direction, a short clinical vignette, "why…") so it is recalled, not recognised by its pattern. Never change the card for this.
 2. Wait for the learner's own attempt. Never answer for them. "I don't know" counts as a failed recall.
-3. reveal_answer(card_id) returns the expected answer (\`back\`), the \`explanation\`, and \`recentAttempts\`. Judge meaning, not wording: equivalent phrasing is correct; missing a key element is not.
-4. Give brief feedback: confirm what was right, correct what was wrong, add at most one useful detail from \`explanation\`. If \`recentAttempts\` shows the same mistake before, point it out.
+3. reveal_answer(card_id) returns the expected answer (\`back\`), the \`explanation\`, the source (document, page and exact excerpt) and \`recentAttempts\`. Grade semantically: synonyms, equivalent terms (brand/generic names, abbreviations, eponyms), other word order and minor spelling mistakes are correct; missing or wrong key elements are not. When unsure, say what you are judging and let the learner decide.
+4. Give brief feedback: confirm what was right, correct what was wrong, add at most one useful detail from \`explanation\`, and cite the source (document and page) when there is one. If \`recentAttempts\` shows the same mistake before, point it out. Always tell the learner the rating you give and why, in one line: grading is never hidden.
 5. grade_card with a rating:
    - again: wrong, blank, or only a fragment recalled
    - hard: correct but with long hesitation, prompting, or a small important omission
@@ -35,11 +36,19 @@ STUDY SESSION
    - easy: instant, complete and effortless
    Include user_answer (the learner's words) and a one-line feedback note; they are shown on future attempts. Pass the same deck/tag you used in get_next_card: the response contains the next question in \`next\`.
 6. Continue with \`next.card\`. When it is null, relay \`next.message\` and close with a short summary (cards reviewed, what to revisit).
-One question per message, keep the pace brisk. If you graded wrongly or the learner disputes the grade, call undo_last_review and grade again.
+One question per message, keep the pace brisk.
+The learner has the last word on grades: if they say their answer was right (or wrong), call correct_grade(card_id, rating) at once, without arguing; it reschedules the card as if graded that way. undo_last_review removes the last review entirely (e.g. graded the wrong card).
+"Explain this" / "no entiendo": call explain_card(card_id). It returns the card, the exact source excerpt with the surrounding text, past attempts and related cards. Explain from that material, quote the source, and say clearly when you add something the source does not contain.
 If grade_card returns leech: true, the card keeps being forgotten: tell the learner and offer to rewrite it (split it, add a mnemonic or context in explanation, fix ambiguity) with update_card.
 
+SESSION TYPES (pass the same mode/format to get_next_card and grade_card)
+- Long-term review (default): the FSRS queue with the learner's daily limits.
+- Quick session (mode "quick"): only what is already due, no new cards; stop after about 10 cards or 5 minutes and summarise.
+- Typing (format "typing"): the learner writes the answer; grade_card reports an exact-match check, but you still judge meaning and give the rating.
+- Multiple choice (format "multiple_choice"): show the question and \`presentation.choices\` (lettered), then grade_card with choice = the option text picked. True/false (format "true_false"): show the question and \`presentation.statement\`, ask whether it is right, then grade_card with statement and answer_true. Both are checked objectively, logged as practice and never change the schedule: they are for warming up or exam drills, not for long-term memory.
+
 EXAM PREPARATION
-When the learner has an exam, set it with update_deck(exam_date) on that subject. Then study with get_next_card(deck, mode: "exam") (and pass mode "exam" to grade_card): it ignores due dates and daily limits and asks first the cards they are least likely to remember on exam day. get_progress_map shows each subject's predicted recall on exam day.
+When the learner has an exam, set it with update_deck(exam_date) on that subject. Then study with get_next_card(deck, mode: "exam") (and pass mode "exam" to grade_card): it ignores due dates and daily limits and asks first the cards they are least likely to remember on exam day. get_progress_map shows each subject's predicted recall on exam day. Exam mode is separate from the daily queue: it does not use the daily limits, and the daily queue is unaffected by it except for the cards actually answered.
 
 CREATING CARDS
 Quality rules (from spaced-repetition research; the server flags violations in add_cards.warnings - fix them with update_card):
@@ -50,6 +59,8 @@ Quality rules (from spaced-repetition research; the server flags violations in a
 - Split lists and enumerations longer than ~4 items into several cards (or one card per item with shared context).
 - Add both directions only when both are useful (e.g. drug → mechanism and mechanism → drug).
 - Never invent facts: every card must be supported by the material. If something is unclear in the source, leave it out.
+- From a document, always include \`excerpt\`: the exact sentence(s) of the source the card is based on (copied verbatim). The server checks it against the page and shows it to the learner.
+- Before saving a batch, you can call add_cards with dry_run: true: it reports duplicates, near-duplicates, possible contradictions with existing cards, quality problems and excerpts not found in the source, without saving anything. Resolve them (skip, merge or ask the learner which answer is right), then add for real.
 
 ORGANIZATION
 - Decks are subjects organized as paths: "Medicina::Farmacología::Antibióticos". Missing levels are created automatically; filtering by a deck includes its subdecks. Reuse existing decks (list_decks) before creating new ones.
@@ -59,10 +70,15 @@ FROM A DOCUMENT (PDF, slides, notes, a web page…)
 1. If you can read the file yourself, call add_document with its title and full text (or content_base64 + filename for PDF/DOCX/PPTX files), and a deck for the subject. Otherwise ask the learner to upload it in the RecallForge web app and use list_documents.
 2. read_document part by part (follow nextPart). Each part is a page, slide or section with the number of cards already made from it; skip parts that are already covered unless asked.
 3. For each part, write cards following the quality rules and send them with add_cards using document_id, document_part and draft: true. The source is filled in automatically.
-4. Tell the learner how many drafts were created per section and ask them to review: they can approve in the web app, or you can show them and call approve_cards.
+4. Tell the learner how many drafts were created per section and ask them to review: they can edit and approve in the web app ("Por revisar"), or you can show them and call approve_cards. Never approve on your own.
+
+YOUR ROLE: SUPERVISED, NEVER OPAQUE
+- Propose, never impose: new cards from material are drafts; edits to existing cards are proposed to the learner before update_card (always with a short reason). Every edit is recorded (card_history) and can be reverted (revert_revision).
+- Grading is always explained and can be overruled (correct_grade).
+- The learner owns the data: import_data restores a RecallForge backup or brings in CSV/TSV (Anki plain-text export); the web app exports JSON (everything) and TSV.
 
 PLANNING
-get_stats gives due counts, today's progress, 30-day retention, streak, a 7-day forecast and the weakest cards (repeated failures). get_progress_map gives the whole picture: every subject's mastery (estimated recall of all its cards right now), coverage, consolidated and weak cards, exam readiness, the study heatmap and document coverage. Use them to suggest what to study next, and present progress as a short, visual summary (a table or bars) rather than raw numbers. Timestamps are UTC ISO-8601; the learner's timezone is in get_stats.settings.`;
+get_stats gives due counts, estimated minutes for today (from the learner's own pace), today's progress, 30-day retention, streak, a 7-day forecast with minutes and the weakest cards. get_progress_map gives the whole picture: every subject's mastery (estimated recall of all its cards right now), coverage, consolidated and weak cards, exam readiness, the study heatmap, document coverage and \`recommendations\` (what to do next, most urgent first). Use them to suggest what to study next, and present progress as a short summary with the next action, not decorative numbers. Streaks and heatmaps are information, never pressure. Timestamps are UTC ISO-8601; the learner's timezone is in get_stats.settings.`;
 
 function ok(data: unknown): CallToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(data) }] };
@@ -88,12 +104,17 @@ async function run(fn: () => unknown | Promise<unknown>): Promise<CallToolResult
 const deckRef = z.string().describe('Deck name (case-insensitive) or id');
 const tagFilter = z.string().describe('Only cards with this tag (hierarchical prefix match: "cardio" also matches "cardio::arritmias")');
 const rating = z.enum(['again', 'hard', 'good', 'easy']);
+const sessionMode = z.enum(['normal', 'exam', 'quick']);
+const questionFormat = z
+  .enum(['recall', 'typing', 'multiple_choice', 'true_false'])
+  .describe('recall/typing move the schedule; multiple_choice/true_false are practice (checked, logged, schedule unchanged)');
 
 const cardShape = {
   front: z.string().describe('Question or prompt shown to the learner'),
   back: z.string().describe('Concise expected answer'),
   explanation: z.string().optional().describe('Context, reasoning, mnemonic or clinical relevance used for feedback'),
   source: z.string().optional().describe('Reference: book, chapter, page, lecture, URL'),
+  excerpt: z.string().optional().describe('Exact sentence(s) of the source this card is based on, copied verbatim'),
   tags: z.array(z.string()).optional().describe('Topic tags, e.g. ["cardio::arritmias", "farmaco"]'),
 };
 
@@ -109,15 +130,16 @@ export function createMcpServer(user: AuthUser): McpServer {
     {
       title: 'Get next card',
       description:
-        'Next card due for active recall. Returns only the question (front) plus remaining counts; the answer is withheld until reveal_answer. card is null when nothing is due (see message and nextDueAt). mode "exam" (needs a deck with an exam date) asks the cards least likely to be remembered on exam day, ignoring due dates and limits.',
+        'Next card to ask. Returns only the question (front) plus remaining counts and `presentation` (choices for multiple_choice, a statement for true_false); the answer is withheld until reveal_answer. card is null when nothing is left (see message and nextDueAt). suggestRephrase: true = ask it with different wording. mode "exam" (needs a deck with an exam date) asks the cards least likely to be remembered on exam day, ignoring due dates and limits; mode "quick" serves only what is already due.',
       inputSchema: {
         deck: deckRef.optional(),
         tag: tagFilter.optional(),
-        mode: z.enum(['normal', 'exam']).optional().describe('Default "normal"'),
+        mode: sessionMode.optional().describe('Default "normal"'),
+        format: questionFormat.optional().describe('Default "recall"'),
       },
       annotations: { readOnlyHint: true },
     },
-    ({ deck, tag, mode }) => run(() => nextCard(user.id, { deck, tag, mode }))
+    ({ deck, tag, mode, format }) => run(() => nextCard(user.id, { deck, tag, mode, format }))
   );
 
   server.registerTool(
@@ -137,21 +159,32 @@ export function createMcpServer(user: AuthUser): McpServer {
     {
       title: 'Grade card',
       description:
-        "Record how well the learner recalled a card and reschedule it with FSRS. Returns the new due date and the next question (for the same deck/tag filter) in `next`.",
+        "Record how well the learner recalled a card. recall/typing: reschedules it with FSRS. multiple_choice/true_false: checked objectively (result.check), logged as practice, schedule unchanged. Returns the new due date and the next question (same deck/tag/mode/format) in `next`.",
       inputSchema: {
         card_id: z.string(),
-        rating: rating.describe('again = failed, hard = recalled with difficulty, good = recalled, easy = effortless'),
+        rating: rating
+          .optional()
+          .describe('again = failed, hard = recalled with difficulty, good = recalled, easy = effortless. Required for recall/typing.'),
         user_answer: z.string().optional().describe("The learner's answer, verbatim or summarized"),
         feedback: z.string().optional().describe('One-line note on what was right/wrong, shown on future attempts'),
         deck: deckRef.optional().describe('Filter for the next card (use the same as get_next_card)'),
         tag: tagFilter.optional(),
-        mode: z.enum(['normal', 'exam']).optional(),
+        mode: sessionMode.optional(),
+        format: questionFormat.optional(),
+        choice: z.string().optional().describe('multiple_choice: the option text the learner picked'),
+        statement: z.string().optional().describe('true_false: the statement shown (presentation.statement)'),
+        answer_true: z.boolean().optional().describe('true_false: whether the learner said the statement is right'),
       },
     },
-    ({ card_id, rating, user_answer, feedback, deck, tag, mode }) =>
+    ({ card_id, rating, user_answer, feedback, deck, tag, mode, format, choice, statement, answer_true }) =>
       run(() => ({
-        result: gradeCard(user.id, card_id, { rating, answer: user_answer, feedback }, 'agent'),
-        next: nextCard(user.id, { deck, tag, mode }),
+        result: gradeCard(
+          user.id,
+          card_id,
+          { rating, answer: user_answer, feedback, mode, format, choice, statement, answerTrue: answer_true },
+          'agent'
+        ),
+        next: nextCard(user.id, { deck, tag, mode, format }),
       }))
   );
 
@@ -164,6 +197,33 @@ export function createMcpServer(user: AuthUser): McpServer {
       inputSchema: { card_id: z.string().optional() },
     },
     ({ card_id }) => run(() => undoLastReview(user.id, card_id))
+  );
+
+  server.registerTool(
+    'correct_grade',
+    {
+      title: 'Correct grade ("my answer was right")',
+      description:
+        "The learner overrules the grade of a card's last review (e.g. their answer was a valid synonym). The card is rescheduled exactly as if it had been graded with this rating at that time; the correction is noted in the review.",
+      inputSchema: {
+        card_id: z.string(),
+        rating: rating,
+        reason: z.string().optional().describe('Why, in a few words (e.g. "sinónimo válido")'),
+      },
+    },
+    ({ card_id, rating, reason }) => run(() => ({ result: correctLastReview(user.id, card_id, { rating, reason }) }))
+  );
+
+  server.registerTool(
+    'explain_card',
+    {
+      title: 'Explain this card',
+      description:
+        'Everything needed to explain a card faithfully: the card with answer and explanation, its source document and page with the exact excerpt and the surrounding text, the learner\'s recent attempts and related cards of the same subject. Use it when the learner asks why, or does not understand.',
+      inputSchema: { card_id: z.string() },
+      annotations: { readOnlyHint: true },
+    },
+    ({ card_id }) => run(() => explainCard(user.id, card_id))
   );
 
   server.registerTool(
@@ -196,11 +256,12 @@ export function createMcpServer(user: AuthUser): McpServer {
     {
       title: 'Add cards',
       description:
-        'Create flashcards (up to 500 per call). Decks (subject paths like "Medicina::Farmacología") are created automatically. Cards whose front already exists in the same deck are skipped. Returns quality warnings to fix with update_card. Use draft: true for AI-generated cards so the learner approves them before studying.',
+        'Create flashcards (up to 500 per call). Decks (subject paths like "Medicina::Farmacología") are created automatically. Cards whose front already exists in the same deck are skipped. Returns warnings (quality, near-duplicates, possible contradictions with existing cards, excerpts not found in the source) to fix with update_card. Use draft: true for AI-generated cards so the learner approves them before studying, and dry_run: true to check a batch without saving.',
       inputSchema: {
         deck: z.string().optional().describe('Default deck path for all cards (created if missing). Defaults to the document deck.'),
         document_id: z.string().optional().describe('Source document the cards come from (see add_document / list_documents)'),
         draft: z.boolean().optional().describe('Create as drafts pending the learner approval (recommended for generated cards)'),
+        dry_run: z.boolean().optional().describe('Only report skipped cards and warnings; nothing is saved'),
         cards: z
           .array(
             z.object({
@@ -213,12 +274,13 @@ export function createMcpServer(user: AuthUser): McpServer {
           .max(500),
       },
     },
-    ({ deck, document_id, draft, cards }) =>
+    ({ deck, document_id, draft, dry_run, cards }) =>
       run(() =>
         addCards(user.id, {
           deck,
           documentId: document_id,
           draft,
+          dryRun: dry_run,
           cards: cards.map(({ document_part, ...card }) => ({ ...card, documentPart: document_part })),
         })
       )
@@ -339,19 +401,42 @@ export function createMcpServer(user: AuthUser): McpServer {
     {
       title: 'Update card',
       description:
-        'Edit a card (fix wording, improve the explanation, retag, move to another deck) or suspend/unsuspend it. Scheduling progress is kept.',
+        'Edit a card (fix wording, improve the explanation, retag, move to another deck) or suspend/unsuspend it. Scheduling progress is kept. Propose content changes to the learner first; every change is recorded with your reason and can be reverted (card_history, revert_revision).',
       inputSchema: {
         card_id: z.string(),
         front: cardShape.front.optional(),
         back: cardShape.back.optional(),
         explanation: cardShape.explanation,
         source: cardShape.source,
+        excerpt: cardShape.excerpt,
         tags: cardShape.tags.describe('Replaces all tags'),
         deck: z.string().optional().describe('Move to this deck (created if missing)'),
         suspended: z.boolean().optional().describe('Suspended cards are never asked'),
+        reason: z.string().optional().describe('Why the card changes (shown in its history)'),
       },
     },
-    ({ card_id, ...patch }) => run(() => ({ card: updateCard(user.id, card_id, patch) }))
+    ({ card_id, reason, ...patch }) => run(() => ({ card: updateCard(user.id, card_id, patch, 'agent', reason) }))
+  );
+
+  server.registerTool(
+    'card_history',
+    {
+      title: 'Card edit history',
+      description: 'Every content change of a card, newest first: when, by whom (agent, web, api, revert), why, and the fields before and after.',
+      inputSchema: { card_id: z.string() },
+      annotations: { readOnlyHint: true },
+    },
+    ({ card_id }) => run(() => ({ revisions: listRevisions(user.id, card_id) }))
+  );
+
+  server.registerTool(
+    'revert_revision',
+    {
+      title: 'Revert a card edit',
+      description: 'Restore the card content from before a change listed by card_history. The revert is itself recorded.',
+      inputSchema: { revision_id: z.string() },
+    },
+    ({ revision_id }) => run(() => ({ card: revertRevision(user.id, revision_id) }))
   );
 
   server.registerTool(
@@ -363,6 +448,21 @@ export function createMcpServer(user: AuthUser): McpServer {
       annotations: { destructiveHint: true },
     },
     ({ card_ids }) => run(() => deleteCards(user.id, card_ids))
+  );
+
+  server.registerTool(
+    'import_data',
+    {
+      title: 'Import cards or a backup',
+      description:
+        'Import a RecallForge JSON export (restores subjects, documents, cards with their memory state, reviews and edit history; items that already exist are kept) or CSV/TSV text with front and back columns (Anki "Notes in Plain Text" export, spreadsheets). Pass the file content as text.',
+      inputSchema: {
+        content: z.string().describe('File content: JSON export, CSV or TSV'),
+        deck: z.string().optional().describe('Subject for CSV/TSV lines without a deck column (default "Importado")'),
+        draft: z.boolean().optional().describe('CSV/TSV: create the cards as drafts to review first'),
+      },
+    },
+    ({ content, deck, draft }) => run(() => importData(user.id, content, { deck, draft }))
   );
 
   // ── Decks & settings ───────────────────────────────────────────────────
@@ -440,15 +540,19 @@ export function createMcpServer(user: AuthUser): McpServer {
     {
       title: 'Study session',
       description: 'Start an active-recall session with RecallForge',
-      argsSchema: { deck: z.string().optional(), tag: z.string().optional() },
+      argsSchema: {
+        deck: z.string().optional(),
+        tag: z.string().optional(),
+        mode: z.string().optional().describe('normal, exam, quick, multiple_choice, true_false or typing'),
+      },
     },
-    ({ deck, tag }) => ({
+    ({ deck, tag, mode }) => ({
       messages: [
         {
           role: 'user',
           content: {
             type: 'text',
-            text: `Start a RecallForge active-recall session${deck ? ` for deck "${deck}"` : ''}${tag ? ` on tag "${tag}"` : ''}. Follow the RecallForge study protocol: ask one question at a time, wait for my answer, then reveal, give feedback and grade.`,
+            text: `Start a RecallForge ${mode ? `${mode} ` : ''}study session${deck ? ` for deck "${deck}"` : ''}${tag ? ` on tag "${tag}"` : ''}. Follow the RecallForge study protocol: ask one question at a time, wait for my answer, then reveal, give feedback and grade.`,
           },
         },
       ],

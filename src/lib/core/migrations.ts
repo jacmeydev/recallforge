@@ -152,6 +152,31 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    // Exact source excerpt per card, an audit trail of content edits, and the
+    // study mode/format of each review (practice answers never reschedule).
+    id: '2026_09_sources_revisions_formats',
+    up(db) {
+      db.exec(`
+        ALTER TABLE cards ADD COLUMN excerpt TEXT NOT NULL DEFAULT '';
+
+        CREATE TABLE card_revisions (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          card_id TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+          changed_at TEXT NOT NULL,
+          source TEXT NOT NULL,
+          reason TEXT,
+          before TEXT NOT NULL,
+          after TEXT NOT NULL
+        );
+        CREATE INDEX ix_card_revisions_card ON card_revisions(card_id, changed_at);
+
+        ALTER TABLE review_logs ADD COLUMN mode TEXT NOT NULL DEFAULT 'review';
+        ALTER TABLE review_logs ADD COLUMN format TEXT NOT NULL DEFAULT 'recall';
+      `);
+    },
+  },
 ];
 
 export function runMigrations(db: DB): string[] {

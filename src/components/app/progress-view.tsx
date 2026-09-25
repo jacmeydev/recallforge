@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api/client';
-import type { ProgressMap, SubjectProgress } from '@/lib/core/progress';
+import type { ProgressMap, Recommendation, SubjectProgress } from '@/lib/core/progress';
 
 const pct = (value: number | null | undefined) => (value == null ? '—' : `${Math.round(value * 100)}%`);
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
@@ -36,8 +36,23 @@ export function ProgressView() {
         <Tile label="Dominio general" value={pct(map.overall.mastery)} hint={plural(map.overall.cards, 'tarjeta', 'tarjetas')} />
         <Tile label="Estudiado" value={pct(map.overall.coverage)} hint={`${map.overall.unseen} sin ver`} />
         <Tile label="Consolidadas" value={String(map.overall.mature)} hint="estabilidad ≥ 21 días" />
-        <Tile label="Racha" value={`${map.heatmap.streakDays} d`} hint={plural(map.heatmap.studiedDays, 'día estudiado', 'días estudiados')} />
+        <Tile
+          label="Hoy"
+          value={`${map.workload.minutesToday} min`}
+          hint={`${plural(map.workload.dueToday, 'tarjeta pendiente', 'tarjetas pendientes')} · ~${map.workload.secondsPerCard} s c/u`}
+        />
       </div>
+
+      {map.recommendations.length > 0 && (
+        <section className="space-y-2 rounded-xl border bg-card p-4">
+          <h2 className="font-semibold">Qué hacer ahora</h2>
+          <ul className="space-y-2">
+            {map.recommendations.slice(0, 6).map((item, i) => (
+              <RecommendationRow key={i} item={item} minutes={map.workload.minutesToday} />
+            ))}
+          </ul>
+        </section>
+      )}
 
       {exams.length > 0 && (
         <section className="space-y-2 rounded-xl border bg-card p-4">
@@ -51,7 +66,7 @@ export function ProgressView() {
       <section className="rounded-xl border bg-card p-4">
         <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
           <h2 className="font-semibold">Materias</h2>
-          <span className="text-xs text-muted-foreground">dominio · estudiado · débiles</span>
+          <span className="text-xs text-muted-foreground">dominio<span className="hidden sm:inline"> · estudiado · débiles</span></span>
         </div>
         {map.subjects.length === 0 ? (
           <p className="text-sm text-muted-foreground">Aún no hay materias.</p>
@@ -95,7 +110,7 @@ export function ProgressView() {
                   {doc.title}
                 </Link>
                 <Bar value={doc.parts ? doc.partsCovered / doc.parts : 0} label={`${doc.partsCovered} de ${doc.parts} partes con tarjetas`} />
-                <span className="w-24 text-right text-xs tabular-nums text-muted-foreground">
+                <span className="w-16 shrink-0 text-right text-xs tabular-nums text-muted-foreground sm:w-24">
                   {doc.partsCovered}/{doc.parts} partes
                 </span>
               </li>
@@ -104,6 +119,50 @@ export function ProgressView() {
         </section>
       )}
     </div>
+  );
+}
+
+function RecommendationRow({ item, minutes }: { item: Recommendation; minutes: number }) {
+  const deckQuery = item.deckId ? `deck=${encodeURIComponent(item.deckId)}` : '';
+  const view: { text: string; href: string; action: string } = (() => {
+    switch (item.kind) {
+      case 'exam_at_risk':
+        return {
+          text: `Examen de ${item.deck}: recuerdo previsto ${item.count}%, por debajo de tu objetivo.`,
+          href: `/review?${deckQuery}&mode=exam`,
+          action: 'Modo examen',
+        };
+      case 'unseen_before_exam':
+        return {
+          text: `${plural(item.count, 'tarjeta', 'tarjetas')} de ${item.deck} sin estudiar antes del examen.`,
+          href: `/review?${deckQuery}&mode=exam`,
+          action: 'Empezar',
+        };
+      case 'due':
+        return { text: `${plural(item.count, 'tarjeta pendiente', 'tarjetas pendientes')} hoy (~${minutes} min).`, href: '/review', action: 'Repasar' };
+      case 'leeches':
+        return {
+          text: `${plural(item.count, 'tarjeta', 'tarjetas')} de ${item.deck} se ${item.count === 1 ? 'olvida' : 'olvidan'} una y otra vez: conviene reescribirlas.`,
+          href: `/deck/${item.deckId}?state=leech`,
+          action: 'Ver',
+        };
+      case 'drafts':
+        return { text: `${plural(item.count, 'borrador', 'borradores')} por revisar.`, href: '/drafts', action: 'Revisar' };
+      case 'document_uncovered':
+        return {
+          text: `${plural(item.count, 'parte', 'partes')} de “${item.document}” sin tarjetas.`,
+          href: `/documents/${item.documentId}`,
+          action: 'Abrir',
+        };
+    }
+  })();
+  return (
+    <li className="flex items-center gap-3 text-sm">
+      <span className="min-w-0 flex-1">{view.text}</span>
+      <Link href={view.href} className="shrink-0 rounded-md border px-2 py-1 text-xs hover:bg-accent">
+        {view.action}
+      </Link>
+    </li>
   );
 }
 
@@ -126,7 +185,7 @@ function Bar({ value, label }: { value: number; label: string }) {
   const width = Math.max(0, Math.min(1, value)) * 100;
   return (
     <div
-      className="h-3 w-40 shrink-0 overflow-hidden rounded-full"
+      className="h-3 w-20 shrink-0 overflow-hidden rounded-full sm:w-40"
       style={{ background: 'var(--color-bar-track)' }}
       role="img"
       aria-label={label}
@@ -147,14 +206,14 @@ function SubjectRow({ subject }: { subject: SubjectProgress }) {
         </Link>
         <span className="ml-2 text-xs text-muted-foreground">{subject.cards}</span>
       </td>
-      <td className="w-56 py-2">
+      <td className="py-2 sm:w-56">
         <div className="flex items-center gap-2">
           <Bar value={subject.mastery} label={`Dominio ${pct(subject.mastery)}`} />
           <span className="w-10 text-right text-xs tabular-nums">{pct(subject.mastery)}</span>
         </div>
       </td>
-      <td className="w-20 py-2 text-right text-xs tabular-nums text-muted-foreground">{pct(subject.coverage)}</td>
-      <td className="w-20 py-2 text-right text-xs tabular-nums text-muted-foreground">
+      <td className="hidden w-20 py-2 text-right text-xs tabular-nums text-muted-foreground sm:table-cell">{pct(subject.coverage)}</td>
+      <td className="hidden w-20 py-2 text-right text-xs tabular-nums text-muted-foreground sm:table-cell">
         {subject.weak > 0 ? `${subject.weak} débiles` : '—'}
       </td>
     </tr>
@@ -171,7 +230,7 @@ function ExamRow({ subject }: { subject: SubjectProgress }) {
         {new Date(`${exam.date}T12:00:00`).toLocaleDateString('es', { day: 'numeric', month: 'short' })} · faltan {exam.daysLeft} días
       </span>
       <Bar value={exam.predictedRecall} label={`Recuerdo previsto el día del examen: ${pct(exam.predictedRecall)}`} />
-      <span className="w-44 text-xs">
+      <span className="text-xs sm:w-44">
         {ready ? '✓ Listo' : '⚠ En riesgo'} · recuerdo previsto {pct(exam.predictedRecall)}
       </span>
       <Link

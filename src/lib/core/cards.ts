@@ -10,6 +10,7 @@ import { deckScopeSql, getOrCreateDeck } from './decks';
 import { badRequest, notFound } from './errors';
 import { getSettings } from './settings';
 import { checkCardQuality } from './quality';
+import { containsLoosely, contentWords, similarity } from './text';
 import { retrievability } from './scheduler';
 import type { Card, CardRow, QuestionCard, StudySettings } from './types';
 
@@ -20,6 +21,8 @@ export const CardInputSchema = z.object({
   back: z.string().trim().min(1).max(8000),
   explanation: z.string().trim().max(8000).optional(),
   source: z.string().trim().max(500).optional(),
+  /** Exact passage of the source the card is based on (shown to the learner, checked against the document). */
+  excerpt: z.string().trim().max(2000).optional(),
   tags: tagsSchema.optional(),
   deck: z.string().trim().min(1).max(300).optional(),
   /** Index of the document part (page, slide, section) the card comes from. */
@@ -34,6 +37,8 @@ export const AddCardsSchema = z.object({
   documentId: z.string().trim().min(1).optional(),
   /** Create the cards as drafts that the learner approves before studying them. */
   draft: z.boolean().optional(),
+  /** Only check (duplicates, contradictions, quality, sources) without saving anything. */
+  dryRun: z.boolean().optional(),
 });
 
 export const ApproveCardsSchema = z
@@ -50,6 +55,7 @@ export const CardPatchSchema = z
     back: z.string().trim().min(1).max(8000),
     explanation: z.string().trim().max(8000),
     source: z.string().trim().max(500),
+    excerpt: z.string().trim().max(2000),
     tags: tagsSchema,
     deck: z.string().trim().min(1).max(300),
     suspended: z.boolean(),
@@ -106,8 +112,12 @@ export function toQuestion(row: CardRow): QuestionCard {
     state: row.state,
     reps: row.reps,
     lapses: row.lapses,
+    suggestRephrase: row.state === 'review' && row.reps >= REPHRASE_AFTER_REPS,
   };
 }
+
+/** After this many successful reviews, agents should vary the wording of the question. */
+export const REPHRASE_AFTER_REPS = 4;
 
 export function toCard(row: CardRow, settings: StudySettings, now = new Date()): Card {
   return {
@@ -115,6 +125,7 @@ export function toCard(row: CardRow, settings: StudySettings, now = new Date()):
     back: row.back,
     explanation: row.explanation,
     source: row.source,
+    excerpt: row.excerpt ?? '',
     dueAt: row.due_at,
     stability: Math.round(row.stability * 100) / 100,
     difficulty: Math.round(row.difficulty * 100) / 100,
@@ -144,16 +155,69 @@ export function getCard(userId: string, id: string): Card {
 export interface AddCardsResult {
   created: Array<{ id: string; deck: string; front: string }>;
   skipped: Array<{ index: number; front: string; reason: string; existingCardId?: string }>;
-  /** Possible quality problems; the cards were still created. Fix them with update_card. */
-  warnings: Array<{ index: number; cardId: string; front: string; issues: string[] }>;
+  /** Possible problems (quality, near-duplicates, contradictions, sources). The cards were still created unless dryRun. */
+  warnings: Array<{ index: number; cardId: string | null; front: string; issues: string[] }>;
   decksCreated: string[];
   status: 'active' | 'draft';
+  dryRun: boolean;
+}
+
+class DryRunRollback extends Error {}
+
+interface SimilarCard {
+  id: string;
+  front: string;
+  back: string;
+  frontWords: Set<string>;
+  backWords: Set<string>;
+}
+
+/**
+ * Existing cards of one top-level subject, indexed by word so each new card is
+ * only compared with cards that share vocabulary (fast on large collections).
+ */
+class SimilarityIndex {
+  private cards: SimilarCard[] = [];
+  private byWord = new Map<string, number[]>();
+
+  add(card: Omit<SimilarCard, 'frontWords' | 'backWords'>) {
+    const indexed: SimilarCard = { ...card, frontWords: new Set(contentWords(card.front)), backWords: new Set(contentWords(card.back)) };
+    const position = this.cards.push(indexed) - 1;
+    for (const word of indexed.frontWords) {
+      const list = this.byWord.get(word);
+      if (list) list.push(position);
+      else this.byWord.set(word, [position]);
+    }
+  }
+
+  /** Near-duplicates (same question and answer) and contradictions (same question, different answer). */
+  check(front: string, back: string): string[] {
+    const frontWords = new Set(contentWords(front));
+    const backWords = new Set(contentWords(back));
+    const shared = new Map<number, number>();
+    for (const word of frontWords) for (const position of this.byWord.get(word) ?? []) shared.set(position, (shared.get(position) ?? 0) + 1);
+    const issues: string[] = [];
+    for (const [position, count] of shared) {
+      if (count < Math.min(2, frontWords.size)) continue;
+      const other = this.cards[position];
+      if (similarity(frontWords, other.frontWords) < 0.6) continue;
+      const sameAnswer =
+        similarity(backWords, other.backWords) >= 0.5 || containsLoosely(back, other.back) || containsLoosely(other.back, back);
+      issues.push(
+        sameAnswer
+          ? `Near-duplicate of card ${other.id}: "${other.front}"`
+          : `Possible contradiction with card ${other.id}: similar question "${other.front}" has a different answer "${other.back}". Check which one is right.`
+      );
+      if (issues.length >= 3) break;
+    }
+    return issues;
+  }
 }
 
 export function addCards(userId: string, input: unknown): AddCardsResult {
   const parsed = AddCardsSchema.safeParse(input);
   if (!parsed.success) throw badRequest('Invalid cards', parsed.error.issues);
-  const { cards, allowDuplicates, documentId } = parsed.data;
+  const { cards, allowDuplicates, documentId, dryRun } = parsed.data;
   const status = parsed.data.draft ? 'draft' : 'active';
   const db = getDb();
 
@@ -175,14 +239,33 @@ export function addCards(userId: string, input: unknown): AddCardsResult {
     }
   }
 
-  const result: AddCardsResult = { created: [], skipped: [], warnings: [], decksCreated: [], status };
+  const result: AddCardsResult = { created: [], skipped: [], warnings: [], decksCreated: [], status, dryRun: Boolean(dryRun) };
   const insert = db.prepare(`
-    INSERT INTO cards (id, user_id, deck_id, front, back, explanation, source, tags, state, due_at, status, document_id, document_part, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ?)
+    INSERT INTO cards (id, user_id, deck_id, front, back, explanation, source, excerpt, tags, state, due_at, status, document_id, document_part, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ?)
   `);
-  const partLabel = db.prepare(`SELECT label FROM document_parts WHERE document_id = ? AND idx = ?`);
+  const partRow = db.prepare(`SELECT label, text FROM document_parts WHERE document_id = ? AND idx = ?`);
 
-  db.transaction(() => {
+  // One similarity index per top-level subject ("Medicina" for "Medicina::Farmacología").
+  const indexes = new Map<string, SimilarityIndex>();
+  const indexFor = (deckName: string) => {
+    const root = deckName.split('::')[0];
+    let index = indexes.get(root.toLowerCase());
+    if (!index) {
+      index = new SimilarityIndex();
+      const rows = db
+        .prepare(
+          `SELECT c.id, c.front, c.back FROM cards c JOIN decks d ON d.id = c.deck_id
+           WHERE c.user_id = ? AND (d.name = ? OR substr(d.name, 1, ?) = ?)`
+        )
+        .all(userId, root, root.length + 2, `${root}::`) as Array<{ id: string; front: string; back: string }>;
+      for (const row of rows) index.add(row);
+      indexes.set(root.toLowerCase(), index);
+    }
+    return index;
+  };
+
+  const write = db.transaction(() => {
     const fronts = new Map<string, Map<string, string>>();
     const frontsFor = (deckId: string) => {
       let map = fronts.get(deckId);
@@ -208,11 +291,16 @@ export function addCards(userId: string, input: unknown): AddCardsResult {
       // Stagger creation times by a millisecond so new cards keep their input order.
       const createdAt = new Date(Date.now() + index).toISOString();
       const id = genId();
-      const label =
+      const part =
         document && card.documentPart !== undefined
-          ? (partLabel.get(document.id, card.documentPart) as { label: string } | undefined)?.label
+          ? (partRow.get(document.id, card.documentPart) as { label: string; text: string } | undefined)
           : undefined;
-      const source = card.source ?? (document ? [document.title, label].filter(Boolean).join(', ') : '');
+      const source = card.source ?? (document ? [document.title, part?.label].filter(Boolean).join(', ') : '');
+      const issues = [...checkCardQuality(card), ...indexFor(deck.name).check(card.front, card.back)];
+      if (document && card.excerpt && part && !containsLoosely(part.text, card.excerpt)) {
+        issues.push(`The excerpt was not found in ${part.label} of "${document.title}"; quote the source text exactly.`);
+      }
+      if (document && !card.excerpt) issues.push('Add the exact excerpt of the source this card comes from.');
       insert.run(
         id,
         userId,
@@ -221,6 +309,7 @@ export function addCards(userId: string, input: unknown): AddCardsResult {
         card.back,
         card.explanation ?? '',
         source,
+        card.excerpt ?? '',
         JSON.stringify(normalizeTags(card.tags)),
         createdAt,
         status,
@@ -230,40 +319,128 @@ export function addCards(userId: string, input: unknown): AddCardsResult {
         createdAt
       );
       existing.set(key, id);
+      indexFor(deck.name).add({ id, front: card.front, back: card.back });
       result.created.push({ id, deck: deck.name, front: card.front });
-      const issues = checkCardQuality(card);
-      if (issues.length > 0) result.warnings.push({ index, cardId: id, front: card.front, issues });
+      if (issues.length > 0) result.warnings.push({ index, cardId: dryRun ? null : id, front: card.front, issues });
     }
-  })();
+    if (dryRun) throw new DryRunRollback();
+  });
 
+  try {
+    write();
+  } catch (error) {
+    if (!(error instanceof DryRunRollback)) throw error;
+    result.created = result.created.map((card) => ({ ...card, id: '' }));
+  }
   return result;
 }
 
-export function updateCard(userId: string, id: string, patch: unknown): Card {
+export type EditSource = 'agent' | 'web' | 'api' | 'revert';
+
+/** The editable content of a card, as stored in revisions. */
+interface CardContent {
+  front: string;
+  back: string;
+  explanation: string;
+  source: string;
+  excerpt: string;
+  tags: string[];
+  deck: string;
+}
+
+function contentOf(row: CardRow): CardContent {
+  return {
+    front: row.front,
+    back: row.back,
+    explanation: row.explanation,
+    source: row.source,
+    excerpt: row.excerpt ?? '',
+    tags: parseTags(row.tags),
+    deck: row.deck_name,
+  };
+}
+
+/**
+ * Edit a card. Content changes are recorded as a revision (who changed what and
+ * why), so no edit — by an agent or anyone else — is ever silent or permanent.
+ */
+export function updateCard(userId: string, id: string, patch: unknown, editSource: EditSource = 'api', reason?: string): Card {
   const parsed = CardPatchSchema.safeParse(patch);
   if (!parsed.success) throw badRequest('Invalid card update', parsed.error.issues);
   const row = getCardRow(userId, id);
   const data = parsed.data;
-  const deckId = data.deck ? getOrCreateDeck(userId, data.deck).deck.id : row.deck_id;
+  const db = getDb();
 
-  getDb()
-    .prepare(
-      `UPDATE cards SET front = ?, back = ?, explanation = ?, source = ?, tags = ?, deck_id = ?, suspended = ?, updated_at = ?
+  db.transaction(() => {
+    const deck = data.deck ? getOrCreateDeck(userId, data.deck).deck : { id: row.deck_id, name: row.deck_name };
+    const before = contentOf(row);
+    const after: CardContent = {
+      front: data.front ?? row.front,
+      back: data.back ?? row.back,
+      explanation: data.explanation ?? row.explanation,
+      source: data.source ?? row.source,
+      excerpt: data.excerpt ?? row.excerpt ?? '',
+      tags: data.tags ? normalizeTags(data.tags) : before.tags,
+      deck: deck.name,
+    };
+    const now = nowIso();
+    db.prepare(
+      `UPDATE cards SET front = ?, back = ?, explanation = ?, source = ?, excerpt = ?, tags = ?, deck_id = ?, suspended = ?, updated_at = ?
        WHERE id = ? AND user_id = ?`
-    )
-    .run(
-      data.front ?? row.front,
-      data.back ?? row.back,
-      data.explanation ?? row.explanation,
-      data.source ?? row.source,
-      data.tags ? JSON.stringify(normalizeTags(data.tags)) : row.tags,
-      deckId,
+    ).run(
+      after.front,
+      after.back,
+      after.explanation,
+      after.source,
+      after.excerpt,
+      JSON.stringify(after.tags),
+      deck.id,
       data.suspended === undefined ? row.suspended : data.suspended ? 1 : 0,
-      nowIso(),
+      now,
       id,
       userId
     );
+    if (JSON.stringify(before) !== JSON.stringify(after)) {
+      db.prepare(
+        `INSERT INTO card_revisions (id, user_id, card_id, changed_at, source, reason, before, after) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(genId(), userId, id, now, editSource, reason?.trim() || null, JSON.stringify(before), JSON.stringify(after));
+    }
+  })();
   return getCard(userId, id);
+}
+
+export interface CardRevision {
+  id: string;
+  changedAt: string;
+  source: EditSource;
+  reason: string | null;
+  /** Only the fields that changed. */
+  changes: Array<{ field: keyof CardContent; before: unknown; after: unknown }>;
+}
+
+export function listRevisions(userId: string, cardId: string): CardRevision[] {
+  getCardRow(userId, cardId);
+  const rows = getDb()
+    .prepare(`SELECT * FROM card_revisions WHERE user_id = ? AND card_id = ? ORDER BY changed_at DESC, rowid DESC`)
+    .all(userId, cardId) as Array<{ id: string; changed_at: string; source: EditSource; reason: string | null; before: string; after: string }>;
+  return rows.map((row) => {
+    const before = JSON.parse(row.before) as CardContent;
+    const after = JSON.parse(row.after) as CardContent;
+    const changes = (Object.keys(after) as Array<keyof CardContent>)
+      .filter((field) => JSON.stringify(before[field]) !== JSON.stringify(after[field]))
+      .map((field) => ({ field, before: before[field], after: after[field] }));
+    return { id: row.id, changedAt: row.changed_at, source: row.source, reason: row.reason, changes };
+  });
+}
+
+/** Put a card's content back to how it was before a revision (recorded as a new revision). */
+export function revertRevision(userId: string, revisionId: string): Card {
+  const row = getDb()
+    .prepare(`SELECT card_id, before FROM card_revisions WHERE user_id = ? AND id = ?`)
+    .get(userId, revisionId) as { card_id: string; before: string } | undefined;
+  if (!row) throw notFound('Revision', revisionId);
+  const before = JSON.parse(row.before) as CardContent;
+  return updateCard(userId, row.card_id, before, 'revert', `Reverted revision ${revisionId}`);
 }
 
 export function deleteCards(userId: string, ids: string[]): { deleted: string[]; notFound: string[] } {

@@ -56,9 +56,14 @@ export function Dashboard() {
             Estudia aquí o pídele a tu agente que te pregunte. Todo queda en la misma memoria.
           </p>
         </div>
-        <Button asChild size="lg">
-          <Link href="/review">Repasar ahora{dueTotal > 0 ? ` (${dueTotal})` : ''}</Link>
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button asChild size="lg" variant="outline">
+            <Link href="/review?mode=quick">Sesión rápida</Link>
+          </Button>
+          <Button asChild size="lg">
+            <Link href="/review">Repasar ahora{dueTotal > 0 ? ` (${dueTotal})` : ''}</Link>
+          </Button>
+        </div>
       </div>
 
       {error && <p className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
@@ -73,7 +78,11 @@ export function Dashboard() {
       )}
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <Stat label="Pendientes hoy" value={stats ? dueTotal : '—'} hint={stats ? `${stats.due.new} nuevas · ${stats.due.review} repasos · ${stats.due.learning} en aprendizaje` : ''} />
+        <Stat
+          label="Pendientes hoy"
+          value={stats ? dueTotal : '—'}
+          hint={stats ? `~${stats.workload.minutesToday} min · ${stats.due.new} nuevas · ${stats.due.review} repasos · ${stats.due.learning} aprendiendo` : ''}
+        />
         <Stat
           label="Repasadas hoy"
           value={stats ? stats.today.reviews : '—'}
@@ -84,7 +93,11 @@ export function Dashboard() {
           value={stats?.retention30d.rate != null ? `${Math.round(stats.retention30d.rate * 100)}%` : '—'}
           hint={stats ? `objetivo ${Math.round(stats.settings.desiredRetention * 100)}%` : ''}
         />
-        <Stat label="Racha" value={stats ? `${stats.streakDays} d` : '—'} hint={stats ? `${stats.cards.total} tarjetas` : ''} />
+        <Stat
+          label="Próximos 7 días"
+          value={stats ? `${stats.forecast.reduce((sum, day) => sum + day.minutes, 0)} min` : '—'}
+          hint={stats ? `${stats.forecast.reduce((sum, day) => sum + day.due, 0)} repasos previstos · ${stats.cards.total} tarjetas` : ''}
+        />
       </div>
 
       <Card>

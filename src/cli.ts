@@ -5,6 +5,8 @@
 //   recallforge ui [--port N]  Local web app on http://127.0.0.1:3030
 //   recallforge stats          Today's summary
 //   recallforge export [file]  Full JSON backup (stdout by default)
+//   recallforge backup [dir]   Copy of the database file (safe while in use)
+//   recallforge import <file>  Restore a JSON export or import CSV/TSV cards
 //   recallforge path           Where the data lives
 // ============================================================================
 
@@ -14,8 +16,9 @@ import { createRequire } from 'module';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { closeDb, resolveDatabasePath } from '@/lib/core/db';
-import { exportUserData } from '@/lib/core/export';
+import { closeDb, getDb, resolveDatabasePath } from '@/lib/core/db';
+import { exportCardsTsv, exportUserData } from '@/lib/core/export';
+import { importData } from '@/lib/core/import';
 import { getStats } from '@/lib/core/stats';
 import { getLocalUser } from '@/lib/core/users';
 import { createMcpServer } from '@/lib/mcp/server';
@@ -26,7 +29,10 @@ Uso:
   recallforge mcp             Servidor MCP por stdio (lo arranca tu agente)
   recallforge ui [--port N]   Abre la web local (por defecto http://127.0.0.1:3030)
   recallforge stats           Resumen de hoy
-  recallforge export [archivo] Copia de seguridad completa en JSON
+  recallforge export [archivo] Copia de seguridad completa en JSON (.tsv → tarjetas para Anki/hojas de cálculo)
+  recallforge backup [carpeta] Copia de la base de datos (por defecto ~/.recallforge/backups)
+  recallforge import <archivo> [--deck Materia] [--draft]
+                               Restaura una exportación JSON o importa tarjetas CSV/TSV (Anki)
   recallforge path            Muestra dónde están tus datos
 
 Ejemplo (Claude Code):
@@ -69,7 +75,7 @@ function printStats(): void {
   const pct = (value: number | null) => (value === null ? '—' : `${Math.round(value * 100)}%`);
   console.log(
     [
-      `Pendientes hoy: ${due} (${stats.due.new} nuevas, ${stats.due.review} repasos, ${stats.due.learning} en aprendizaje)`,
+      `Pendientes hoy: ${due} (~${stats.workload.minutesToday} min · ${stats.due.new} nuevas, ${stats.due.review} repasos, ${stats.due.learning} en aprendizaje)`,
       `Repasadas hoy: ${stats.today.reviews} · acierto ${pct(stats.today.accuracy)}`,
       `Retención 30 días: ${pct(stats.retention30d.rate)} · racha ${stats.streakDays} días`,
       `Tarjetas: ${stats.cards.total} · por revisar ${stats.cards.drafts}`,
@@ -87,13 +93,37 @@ async function main(): Promise<void> {
     case 'stats':
       return printStats();
     case 'export': {
-      const json = JSON.stringify(exportUserData(getLocalUser().id), null, 2);
+      const tsv = args[0]?.toLowerCase().endsWith('.tsv') || args[0]?.toLowerCase().endsWith('.txt');
+      const json = tsv ? exportCardsTsv(getLocalUser().id) : JSON.stringify(exportUserData(getLocalUser().id), null, 2);
       if (args[0]) {
         fs.writeFileSync(args[0], json);
         console.error(`Exportado a ${args[0]}`);
       } else {
         process.stdout.write(json + '\n');
       }
+      return;
+    }
+    case 'backup': {
+      const dir = args[0] ?? path.join(path.dirname(resolveDatabasePath()), 'backups');
+      fs.mkdirSync(dir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const file = path.join(dir, `recallforge-${stamp}.db`);
+      await getDb().backup(file);
+      console.error(`Copia guardada en ${file}`);
+      return;
+    }
+    case 'import': {
+      if (!args[0]) throw new Error('Uso: recallforge import <archivo> [--deck Materia] [--draft]');
+      const deckIndex = args.indexOf('--deck');
+      const result = importData(getLocalUser().id, fs.readFileSync(args[0], 'utf8'), {
+        deck: deckIndex >= 0 ? args[deckIndex + 1] : undefined,
+        draft: args.includes('--draft'),
+      });
+      console.log(
+        `Importado: ${result.cards} tarjetas, ${result.decks} materias nuevas, ${result.documents} documentos, ${result.reviews} repasos` +
+          (result.skipped ? ` · ${result.skipped} omitidos (ya existían o duplicados)` : '')
+      );
+      for (const warning of result.warnings.slice(0, 10)) console.error(`  · ${warning}`);
       return;
     }
     case 'path':

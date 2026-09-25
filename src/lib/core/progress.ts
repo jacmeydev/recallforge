@@ -11,6 +11,7 @@
 import { getDb } from './db';
 import { DECK_SEPARATOR, effectiveExamDate, listDecks } from './decks';
 import { listDocuments } from './documents';
+import { averageSecondsPerCard } from './stats';
 import { retrievability } from './scheduler';
 import { getSettings } from './settings';
 import { localDateTime, studyDay, studyDaySqlModifier } from './time';
@@ -58,6 +59,22 @@ export interface ProgressMap {
     streakDays: number;
   };
   documents: Array<{ id: string; title: string; deck: string | null; parts: number; partsCovered: number; cards: number; drafts: number }>;
+  /** Predictable daily load. */
+  workload: { dueToday: number; minutesToday: number; secondsPerCard: number };
+  /** What to do next, most urgent first. Each item names the scope and the action to take. */
+  recommendations: Recommendation[];
+}
+
+export interface Recommendation {
+  kind: 'exam_at_risk' | 'due' | 'leeches' | 'drafts' | 'unseen_before_exam' | 'document_uncovered';
+  /** Deck (subject) or document the recommendation is about. */
+  deckId?: string;
+  deck?: string;
+  documentId?: string;
+  document?: string;
+  count: number;
+  /** One sentence for agents; the web UI renders its own text from kind and count. */
+  message: string;
 }
 
 interface Accumulator {
@@ -212,9 +229,21 @@ export function getProgressMap(userId: string, options: { days?: number } = {}, 
     streakDays++;
   }
 
+  const documents = listDocuments(userId).map((doc) => ({
+    id: doc.id,
+    title: doc.title,
+    deck: doc.deck?.name ?? null,
+    parts: doc.parts,
+    partsCovered: doc.cards.partsCovered,
+    cards: doc.cards.active,
+    drafts: doc.cards.drafts,
+  }));
+  const secondsPerCard = averageSecondsPerCard(userId, now);
+  const overall = { ...summarize(overallAcc), drafts: decks.reduce((sum, deck) => sum + deck.counts.drafts, 0) };
+
   return {
     generatedAt: now.toISOString(),
-    overall: { ...summarize(overallAcc), drafts: decks.reduce((sum, deck) => sum + deck.counts.drafts, 0) },
+    overall,
     subjects,
     heatmap: {
       from: heatDays[0].date,
@@ -225,14 +254,82 @@ export function getProgressMap(userId: string, options: { days?: number } = {}, 
       totalReviews: heatDays.reduce((sum, day) => sum + day.reviews, 0),
       streakDays,
     },
-    documents: listDocuments(userId).map((doc) => ({
-      id: doc.id,
-      title: doc.title,
-      deck: doc.deck?.name ?? null,
-      parts: doc.parts,
-      partsCovered: doc.cards.partsCovered,
-      cards: doc.cards.active,
-      drafts: doc.cards.drafts,
-    })),
+    documents,
+    workload: { dueToday: overall.due, minutesToday: Math.ceil((overall.due * secondsPerCard) / 60), secondsPerCard },
+    recommendations: recommend(subjects, documents, overall, settings.desiredRetention, secondsPerCard),
   };
+}
+
+function recommend(
+  subjects: SubjectProgress[],
+  documents: ProgressMap['documents'],
+  overall: ProgressMap['overall'],
+  target: number,
+  secondsPerCard: number
+): Recommendation[] {
+  const out: Array<Recommendation & { priority: number }> = [];
+  // Exams: shown once, at the subject that carries the date (its shallowest level).
+  const examRoots = subjects.filter(
+    (subject) => subject.exam && !subjects.some((other) => other.id === subject.parentId && other.exam?.date === subject.exam?.date)
+  );
+  for (const subject of examRoots) {
+    const exam = subject.exam!;
+    if (subject.unseen > 0 && exam.daysLeft <= 60) {
+      out.push({
+        kind: 'unseen_before_exam',
+        deckId: subject.id,
+        deck: subject.name,
+        count: subject.unseen,
+        priority: 100 - exam.daysLeft,
+        message: `${subject.unseen} cards of "${subject.name}" were never studied and the exam is in ${exam.daysLeft} days: study them (exam mode starts with them).`,
+      });
+    }
+    if (exam.predictedRecall < target && exam.daysLeft <= 30) {
+      out.push({
+        kind: 'exam_at_risk',
+        deckId: subject.id,
+        deck: subject.name,
+        count: Math.round(exam.predictedRecall * 100),
+        priority: 90 - exam.daysLeft,
+        message: `Predicted recall for the "${subject.name}" exam (${exam.date}, ${exam.daysLeft} days) is ${Math.round(exam.predictedRecall * 100)}%, under the ${Math.round(target * 100)}% target: study it in exam mode.`,
+      });
+    }
+  }
+  if (overall.due > 0) {
+    out.push({
+      kind: 'due',
+      count: overall.due,
+      priority: 50,
+      message: `${overall.due} cards are due today (about ${Math.ceil((overall.due * secondsPerCard) / 60)} min): review them to keep the schedule on track.`,
+    });
+  }
+  for (const subject of subjects.filter((s) => s.depth === 0 && s.weak > 0)) {
+    out.push({
+      kind: 'leeches',
+      deckId: subject.id,
+      deck: subject.name,
+      count: subject.weak,
+      priority: 30 + subject.weak,
+      message: `${subject.weak} cards of "${subject.name}" keep being forgotten: rewrite them (split, add a mnemonic or context) instead of repeating them.`,
+    });
+  }
+  if (overall.drafts > 0) {
+    out.push({
+      kind: 'drafts',
+      count: overall.drafts,
+      priority: 20,
+      message: `${overall.drafts} draft cards wait for review: approve, edit or delete them so they enter the study queue.`,
+    });
+  }
+  for (const doc of documents.filter((d) => d.parts > 0 && d.partsCovered < d.parts)) {
+    out.push({
+      kind: 'document_uncovered',
+      documentId: doc.id,
+      document: doc.title,
+      count: doc.parts - doc.partsCovered,
+      priority: 10,
+      message: `${doc.parts - doc.partsCovered} of ${doc.parts} parts of "${doc.title}" have no cards yet.`,
+    });
+  }
+  return out.sort((a, b) => b.priority - a.priority).map(({ priority: _priority, ...rest }) => rest);
 }

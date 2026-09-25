@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { api } from '@/lib/api/client';
+import { CardSource, ExplainButton } from './card-source';
 import { checkCardQuality } from '@/lib/core/quality';
 import type { Card as StudyCard } from '@/lib/core/types';
 
@@ -117,7 +118,7 @@ export function DraftsView({ deck, documentId }: { deck?: string; documentId?: s
           return (
             <div key={card.id} className="space-y-3 rounded-xl border bg-card p-4">
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-                <span>{card.source || card.document?.title || 'Sin fuente'}</span>
+                <span>{card.document || card.source ? 'Borrador' : 'Borrador sin fuente'}</span>
                 <Input
                   className="h-7 max-w-xs text-xs"
                   value={draft.deck}
@@ -146,6 +147,7 @@ export function DraftsView({ deck, documentId }: { deck?: string; documentId?: s
                 placeholder="Explicación (opcional)"
                 aria-label="Explicación"
               />
+              <CardSource card={card} />
               {issues.length > 0 && (
                 <ul className="list-inside list-disc rounded-lg bg-amber-50 p-3 text-xs text-amber-900">
                   {issues.map((issue) => (
@@ -161,6 +163,7 @@ export function DraftsView({ deck, documentId }: { deck?: string; documentId?: s
                   Descartar
                 </Button>
               </div>
+              {card.document && <ExplainButton cardId={card.id} />}
             </div>
           );
         })}

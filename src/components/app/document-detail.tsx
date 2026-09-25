@@ -86,7 +86,7 @@ export function DocumentDetailView({ documentId }: { documentId: string }) {
 
       <div className="divide-y rounded-xl border bg-card">
         {document.outline.map((part) => (
-          <div key={part.index} className="p-3 text-sm">
+          <div key={part.index} id={`part-${part.index}`} className="scroll-mt-20 p-3 text-sm">
             <button className="flex w-full items-center gap-3 text-left" onClick={() => void togglePart(part.index)}>
               <span className="flex-1 font-medium">{part.label}</span>
               <span className="text-xs text-muted-foreground">{part.chars.toLocaleString()} caracteres</span>

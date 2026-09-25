@@ -161,18 +161,84 @@ export function SettingsView({ connection }: { connection: ConnectionInfo }) {
         </Card>
       )}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Tus datos</CardTitle>
-          <CardDescription>Descarga todas tus materias, tarjetas, documentos e historial en JSON.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Button asChild variant="outline">
-            <a href="/api/v1/export">Exportar JSON</a>
-          </Button>
-        </CardContent>
-      </Card>
+      <DataCard databasePath={connection.databasePath} />
     </div>
+  );
+}
+
+function DataCard({ databasePath }: { databasePath: string }) {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState('');
+  const [error, setError] = useState('');
+
+  async function importFile(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const file = form.get('file');
+    if (!(file instanceof File) || file.size === 0) return setError('Elige un archivo');
+    setBusy(true);
+    setError('');
+    setResult('');
+    try {
+      const res = await fetch('/api/v1/import', { method: 'POST', body: form, headers: { 'x-recallforge-client': 'web' } });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message ?? `Error ${res.status}`);
+      setResult(
+        `Importado: ${data.cards} tarjetas, ${data.decks} materias nuevas, ${data.documents} documentos, ${data.reviews} repasos` +
+          (data.skipped ? ` · ${data.skipped} omitidos (ya existían o duplicados)` : '')
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Tus datos</CardTitle>
+        <CardDescription>
+          Todo vive en un archivo de tu ordenador y funciona sin internet: <code className="break-all text-xs">{databasePath}</code>
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-5 text-sm">
+        <div className="space-y-2">
+          <div className="font-medium">Exportar</div>
+          <div className="flex flex-wrap gap-2">
+            <Button asChild variant="outline" size="sm">
+              <a href="/api/v1/export">Copia completa (JSON)</a>
+            </Button>
+            <Button asChild variant="outline" size="sm">
+              <a href="/api/v1/export?format=tsv">Tarjetas para Anki / Excel (TSV)</a>
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            El JSON incluye materias, fechas de examen, documentos, tarjetas con su estado de memoria, todos los repasos y el historial de
+            cambios. Copia de la base de datos: <code>recallforge backup</code>.
+          </p>
+        </div>
+        <form className="space-y-2" onSubmit={(e) => void importFile(e)}>
+          <div className="font-medium">Importar</div>
+          <p className="text-xs text-muted-foreground">
+            Una copia JSON de RecallForge (se fusiona sin duplicar) o un CSV/TSV con pregunta y respuesta (exportación “Notas en texto
+            plano” de Anki, hojas de cálculo).
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <input name="file" type="file" accept=".json,.csv,.tsv,.txt" className="max-w-full text-xs" />
+            <Input name="deck" placeholder="Materia para CSV/TSV (opcional)" className="h-8 max-w-xs text-xs" />
+            <label className="flex items-center gap-1 text-xs">
+              <input type="checkbox" name="draft" value="true" /> como borradores
+            </label>
+            <Button type="submit" size="sm" disabled={busy}>
+              {busy ? 'Importando…' : 'Importar'}
+            </Button>
+          </div>
+          {result && <p className="text-xs text-emerald-700 dark:text-emerald-400">{result}</p>}
+          {error && <p className="text-xs text-destructive">{error}</p>}
+        </form>
+      </CardContent>
+    </Card>
   );
 }
 

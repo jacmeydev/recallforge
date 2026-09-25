@@ -15,6 +15,7 @@ import { z } from 'zod';
 import { genId, getDb } from './db';
 import { CARD_SELECT, getCardRow, normalizeTags, tagFilterSql, toCard, toQuestion } from './cards';
 import { deckScopeSql, effectiveExamDate, listDecks, resolveDeck } from './decks';
+import { checkFormatAnswer, isPracticeFormat, present, QUESTION_FORMATS, type FormatCheck, type Presentation, type QuestionFormat } from './formats';
 import { LEECH_LAPSES } from './progress';
 import { badRequest } from './errors';
 import { previewOutcomes, retrievability, schedule } from './scheduler';
@@ -29,19 +30,28 @@ export const StudyFilterSchema = z.object({
    * "exam": ignore due dates and daily limits and ask first the cards you are
    * least likely to remember on the exam day of the deck (see update_deck).
    */
-  mode: z.enum(['normal', 'exam']).optional(),
+  mode: z.enum(['normal', 'exam', 'quick']).optional(),
+  /** How to ask: recall (default), typing, multiple_choice or true_false (the last two are practice only). */
+  format: z.enum(QUESTION_FORMATS as [string, ...string[]]).optional(),
 });
 
 export type StudyFilter = z.infer<typeof StudyFilterSchema>;
 
 export const GradeSchema = z.object({
-  rating: z.union([
-    z.enum(['again', 'hard', 'good', 'easy']),
-    z.number().int().min(1).max(4).transform((n) => RATINGS[n - 1]),
-  ]),
+  /** Required for recall/typing; derived from the check for multiple_choice and true_false. */
+  rating: z
+    .union([z.enum(['again', 'hard', 'good', 'easy']), z.number().int().min(1).max(4).transform((n) => RATINGS[n - 1])])
+    .optional(),
   answer: z.string().max(8000).optional(),
   feedback: z.string().max(8000).optional(),
   durationMs: z.number().int().min(0).max(24 * 60 * 60 * 1000).optional(),
+  mode: z.enum(['normal', 'exam', 'quick']).optional(),
+  format: z.enum(QUESTION_FORMATS as [string, ...string[]]).optional(),
+  /** multiple_choice: the option the learner picked. */
+  choice: z.string().max(8000).optional(),
+  /** true_false: the statement shown and whether the learner judged it true. */
+  statement: z.string().max(8000).optional(),
+  answerTrue: z.boolean().optional(),
 });
 
 interface QueueScope {
@@ -78,7 +88,7 @@ function buildScope(userId: string, filter: StudyFilter, now: Date): QueueScope 
     .prepare(
       `SELECT COUNT(DISTINCT CASE WHEN state = 'new' THEN card_id END) AS new_done,
               COALESCE(SUM(state = 'review'), 0) AS review_done
-       FROM review_logs WHERE user_id = ? AND reviewed_at >= ?`
+       FROM review_logs WHERE user_id = ? AND reviewed_at >= ? AND mode != 'practice'`
     )
     .get(userId, day.start.toISOString()) as { new_done: number; review_done: number };
 
@@ -142,6 +152,8 @@ function nextDueAt(scope: QueueScope): string | null {
 
 export interface NextCardResult {
   card: QuestionCard | null;
+  /** How to ask the card (choices for multiple choice, the statement for true/false). */
+  presentation?: Presentation;
   remaining: QueueCounts;
   /** Present when nothing is due: when the next card becomes due. */
   nextDueAt?: string | null;
@@ -151,12 +163,16 @@ export interface NextCardResult {
 export function nextCard(userId: string, filterInput: unknown = {}, now = new Date()): NextCardResult {
   const parsed = StudyFilterSchema.safeParse(filterInput ?? {});
   if (!parsed.success) throw badRequest('Invalid study filter', parsed.error.issues);
-  if (parsed.data.mode === 'exam') return nextExamCard(userId, parsed.data, now);
-  const scope = buildScope(userId, parsed.data, now);
+  const filter = parsed.data;
+  if (isPracticeFormat(filter.format as never)) return nextPracticeCard(userId, filter, now);
+  if (filter.mode === 'exam') return withPresentation(nextExamCard(userId, filter, now), userId, filter);
+  const scope = buildScope(userId, filter, now);
+  // Quick session: only what is already due (no new cards), most at-risk first.
+  if (filter.mode === 'quick') scope.newRemaining = 0;
   const row = pickNext(scope);
   const remaining = queueCounts(scope);
 
-  if (row) return { card: toQuestion(row), remaining };
+  if (row) return { card: toQuestion(row), presentation: present(row, (filter.format as never) ?? 'recall'), remaining };
 
   const due = nextDueAt(scope);
   const limitHit =
@@ -175,6 +191,47 @@ export function nextCard(userId: string, filterInput: unknown = {}, now = new Da
       .filter(Boolean)
       .join(' '),
   };
+}
+
+function withPresentation(result: NextCardResult, userId: string, filter: StudyFilter): NextCardResult {
+  if (!result.card) return result;
+  return { ...result, presentation: present(getCardRow(userId, result.card.id), (filter.format as never) ?? 'recall') };
+}
+
+/** Practiced this recently = skipped, so a practice session keeps moving through the subject. */
+const PRACTICE_GAP_MS = 10 * 60 * 1000;
+
+/**
+ * Practice (multiple choice, true/false): weakest cards of the scope first,
+ * skipping those practiced in the last minutes. Never changes the schedule.
+ */
+function nextPracticeCard(userId: string, filter: StudyFilter, now: Date): NextCardResult {
+  const settings = getSettings(userId);
+  const where = ['c.user_id = @userId', `c.status = 'active'`, 'c.suspended = 0'];
+  const params: Record<string, unknown> = {
+    userId,
+    since: new Date(now.getTime() - PRACTICE_GAP_MS).toISOString(),
+  };
+  if (filter.deck) {
+    const scope = deckScopeSql(userId, filter.deck);
+    where.push(scope.sql);
+    Object.assign(params, scope.params);
+  }
+  if (filter.tag) {
+    where.push(tagFilterSql('@tag'));
+    params.tag = filter.tag;
+  }
+  where.push(`NOT EXISTS (SELECT 1 FROM review_logs r WHERE r.card_id = c.id AND r.mode = 'practice' AND r.reviewed_at >= @since)`);
+  const rows = getDb().prepare(`${CARD_SELECT} WHERE ${where.join(' AND ')}`).all(params) as CardRow[];
+  const ranked = rows
+    .map((row) => ({ row, recall: retrievability(row, settings, now) ?? 0 }))
+    .sort((a, b) => a.recall - b.recall || Math.random() - 0.5);
+  const pick = ranked[0]?.row;
+  const remaining: QueueCounts = { learning: 0, review: rows.filter((r) => r.state !== 'new').length, new: rows.filter((r) => r.state === 'new').length };
+  if (!pick) {
+    return { card: null, remaining, nextDueAt: null, message: 'Every card in this scope was practiced in the last few minutes.' };
+  }
+  return { card: toQuestion(pick), presentation: present(pick, filter.format as never), remaining };
 }
 
 /** Cards reviewed this recently are not asked again in exam mode. */
@@ -280,6 +337,10 @@ export interface GradeResult {
   lapses: number;
   /** True when the card keeps being forgotten: suggest rewriting it (split it, add a mnemonic, clarify). */
   leech: boolean;
+  /** Practice answers (multiple choice, true/false) are logged but never change the schedule. */
+  practice: boolean;
+  /** Objective check for multiple choice / true-false, or an exact-match hint for typing. */
+  check: FormatCheck | null;
 }
 
 export function gradeCard(
@@ -291,10 +352,18 @@ export function gradeCard(
 ): GradeResult {
   const parsed = GradeSchema.safeParse(input);
   if (!parsed.success) throw badRequest('Invalid grade: rating must be again, hard, good or easy (or 1-4)', parsed.error.issues);
-  const { rating, answer, feedback, durationMs } = parsed.data;
-
+  const { answer, feedback, durationMs } = parsed.data;
+  const format = (parsed.data.format ?? 'recall') as QuestionFormat;
   const settings = getSettings(userId);
   const row = getCardRow(userId, cardId);
+  const check = checkFormatAnswer(row, { ...parsed.data, format });
+  // Only the objective practice formats derive the rating; recall and typing are judged by meaning, never by string match.
+  const derived = isPracticeFormat(format) && check ? (check.correct ? 'good' : 'again') : undefined;
+  const rating: Rating | undefined = parsed.data.rating ?? derived;
+  if (!rating) throw badRequest('rating is required (again, hard, good or easy)');
+
+  if (isPracticeFormat(format)) return logPractice(userId, row, rating, format, check, { answer, feedback, durationMs, source }, now);
+
   const outcome = schedule(row, rating, settings, now);
   const next = outcome.card;
   const leech = next.lapses >= LEECH_LAPSES && next.lapses > row.lapses;
@@ -325,8 +394,8 @@ export function gradeCard(
       `INSERT INTO review_logs (
          id, user_id, card_id, reviewed_at, rating, state, next_state, due_at, next_due_at,
          stability, next_stability, difficulty, next_difficulty, elapsed_days, scheduled_days,
-         duration_ms, answer, feedback, source, snapshot
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         duration_ms, answer, feedback, source, snapshot, mode, format
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       genId(),
       userId,
@@ -347,7 +416,9 @@ export function gradeCard(
       answer?.trim() || null,
       feedback?.trim() || null,
       source,
-      JSON.stringify(snapshotOf(row))
+      JSON.stringify(snapshotOf(row)),
+      parsed.data.mode === 'exam' ? 'exam' : 'review',
+      format
     );
     if (leech && !parseTagList(row.tags).some((tag) => tag.toLowerCase() === 'leech')) {
       db.prepare(`UPDATE cards SET tags = ? WHERE id = ?`).run(
@@ -368,6 +439,60 @@ export function gradeCard(
     difficulty: Math.round(next.difficulty * 100) / 100,
     lapses: next.lapses,
     leech,
+    practice: false,
+    check,
+  };
+}
+
+function logPractice(
+  userId: string,
+  row: CardRow,
+  rating: Rating,
+  format: string,
+  check: FormatCheck | null,
+  details: { answer?: string; feedback?: string; durationMs?: number; source: ReviewSource },
+  now: Date
+): GradeResult {
+  getDb()
+    .prepare(
+      `INSERT INTO review_logs (
+         id, user_id, card_id, reviewed_at, rating, state, next_state, due_at, next_due_at,
+         stability, next_stability, difficulty, next_difficulty, duration_ms, answer, feedback, source, mode, format
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'practice', ?)`
+    )
+    .run(
+      genId(),
+      userId,
+      row.id,
+      now.toISOString(),
+      rating,
+      row.state,
+      row.state,
+      row.due_at,
+      row.due_at,
+      row.stability,
+      row.stability,
+      row.difficulty,
+      row.difficulty,
+      details.durationMs ?? null,
+      details.answer?.trim() || check?.given || null,
+      details.feedback?.trim() || null,
+      details.source,
+      format
+    );
+  return {
+    cardId: row.id,
+    rating,
+    previousState: row.state,
+    state: row.state,
+    dueAt: row.due_at,
+    interval: 'unchanged (practice)',
+    stability: Math.round(row.stability * 100) / 100,
+    difficulty: Math.round(row.difficulty * 100) / 100,
+    lapses: row.lapses,
+    leech: false,
+    practice: true,
+    check,
   };
 }
 
@@ -412,7 +537,7 @@ export function undoLastReview(
   const log = db
     .prepare(
       `SELECT id, card_id, rating, reviewed_at, snapshot FROM review_logs
-       WHERE user_id = ? ${cardId ? 'AND card_id = ?' : ''} ORDER BY reviewed_at DESC, rowid DESC LIMIT 1`
+       WHERE user_id = ? AND mode != 'practice' ${cardId ? 'AND card_id = ?' : ''} ORDER BY reviewed_at DESC, rowid DESC LIMIT 1`
     )
     .get(...(cardId ? [userId, cardId] : [userId])) as
     | { id: string; card_id: string; rating: Rating; reviewed_at: string; snapshot: string | null }
@@ -444,4 +569,50 @@ export function resetCard(userId: string, cardId: string, now = new Date()): Car
     )
     .run(now.toISOString(), now.toISOString(), cardId, userId);
   return toCard(getCardRow(userId, cardId), getSettings(userId), now);
+}
+
+export const CorrectGradeSchema = z.object({
+  rating: z.union([z.enum(['again', 'hard', 'good', 'easy']), z.number().int().min(1).max(4).transform((n) => RATINGS[n - 1])]),
+  reason: z.string().trim().max(2000).optional(),
+});
+
+/**
+ * "My answer was right": replace the rating of the card's last review with the
+ * learner's own judgement. The card is restored to its state before that review
+ * and rescheduled with the corrected rating at the original review time, so the
+ * result is exactly as if it had been graded that way. The correction is noted
+ * in the review's feedback.
+ */
+export function correctLastReview(userId: string, cardId: string, input: unknown): GradeResult & { correctedFrom: Rating } {
+  const parsed = CorrectGradeSchema.safeParse(input);
+  if (!parsed.success) throw badRequest('Invalid correction: rating must be again, hard, good or easy (or 1-4)', parsed.error.issues);
+  const log = getDb()
+    .prepare(
+      `SELECT rating, reviewed_at, answer, feedback, duration_ms, source, mode, format FROM review_logs
+       WHERE user_id = ? AND card_id = ? AND mode != 'practice' ORDER BY reviewed_at DESC, rowid DESC LIMIT 1`
+    )
+    .get(userId, cardId) as
+    | { rating: Rating; reviewed_at: string; answer: string | null; feedback: string | null; duration_ms: number | null; source: ReviewSource; mode: string; format: string }
+    | undefined;
+  if (!log) throw badRequest('This card has no review to correct');
+  const note = `Rating corrected by the learner: ${log.rating} → ${parsed.data.rating}${parsed.data.reason ? ` (${parsed.data.reason})` : ''}`;
+  let result!: GradeResult;
+  getDb().transaction(() => {
+    undoLastReview(userId, cardId);
+    result = gradeCard(
+      userId,
+      cardId,
+      {
+        rating: parsed.data.rating,
+        answer: log.answer ?? undefined,
+        feedback: [log.feedback, note].filter(Boolean).join('\n'),
+        durationMs: log.duration_ms ?? undefined,
+        mode: log.mode === 'exam' ? 'exam' : undefined,
+        format: log.format === 'typing' ? 'typing' : 'recall',
+      },
+      log.source,
+      new Date(log.reviewed_at)
+    );
+  })();
+  return { ...result, correctedFrom: log.rating };
 }

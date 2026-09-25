@@ -9,7 +9,9 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { api, formatDue } from '@/lib/api/client';
+import type { CardRevision } from '@/lib/core/cards';
 import type { Card as StudyCard, DeckSummary } from '@/lib/core/types';
+import { CardSource } from './card-source';
 
 const PAGE = 50;
 const STATE_LABEL: Record<string, string> = { new: 'nueva', learning: 'aprendiendo', relearning: 'reaprendiendo', review: 'repaso' };
@@ -41,13 +43,14 @@ function draftBody(draft: CardDraft) {
   };
 }
 
-export function DeckView({ deckId }: { deckId: string }) {
+export function DeckView({ deckId, initialState = '' }: { deckId: string; initialState?: string }) {
   const router = useRouter();
   const [deck, setDeck] = useState<DeckSummary | null>(null);
   const [cards, setCards] = useState<StudyCard[]>([]);
   const [total, setTotal] = useState(0);
   const [query, setQuery] = useState('');
-  const [state, setState] = useState('');
+  const [state, setState] = useState(initialState);
+  const [history, setHistory] = useState<string | null>(null);
   const [draft, setDraft] = useState<CardDraft>(EMPTY_DRAFT);
   const [editing, setEditing] = useState<{ id: string; draft: CardDraft } | null>(null);
   const [message, setMessage] = useState('');
@@ -281,6 +284,10 @@ export function DeckView({ deckId }: { deckId: string }) {
                 <div className="text-sm">
                   <p className="whitespace-pre-wrap">{card.back}</p>
                   {card.explanation && <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{card.explanation}</p>}
+                  <div className="mt-1">
+                    <CardSource card={card} />
+                  </div>
+                  {history === card.id && <CardHistory cardId={card.id} onReverted={reload} />}
                 </div>
                 <div className="flex flex-col items-start gap-2 md:items-end">
                   <div className="flex flex-wrap gap-1">
@@ -291,6 +298,13 @@ export function DeckView({ deckId }: { deckId: string }) {
                   <div className="flex gap-1 text-xs">
                     <button className="text-muted-foreground hover:text-foreground" onClick={() => setEditing({ id: card.id, draft: toDraft(card) })}>
                       Editar
+                    </button>
+                    ·
+                    <button
+                      className="text-muted-foreground hover:text-foreground"
+                      onClick={() => setHistory(history === card.id ? null : card.id)}
+                    >
+                      Historial
                     </button>
                     ·
                     <button className="text-muted-foreground hover:text-foreground" onClick={() => void toggleSuspend(card)}>
@@ -315,6 +329,47 @@ export function DeckView({ deckId }: { deckId: string }) {
         )}
       </div>
     </div>
+  );
+}
+
+const EDIT_SOURCE: Record<string, string> = { agent: 'agente', web: 'tú (web)', api: 'API', revert: 'restauración' };
+
+function CardHistory({ cardId, onReverted }: { cardId: string; onReverted: () => void }) {
+  const [revisions, setRevisions] = useState<CardRevision[] | null>(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    api<{ revisions: CardRevision[] }>(`/api/v1/cards/${cardId}/revisions`)
+      .then((data) => setRevisions(data.revisions))
+      .catch((err) => setError(err.message));
+  }, [cardId]);
+  if (error) return <p className="mt-2 text-xs text-destructive">{error}</p>;
+  if (!revisions) return <p className="mt-2 text-xs text-muted-foreground">Cargando…</p>;
+  if (revisions.length === 0) return <p className="mt-2 text-xs text-muted-foreground">Sin cambios desde que se creó.</p>;
+  return (
+    <ul className="mt-2 space-y-2 rounded-lg border p-2 text-xs">
+      {revisions.map((revision) => (
+        <li key={revision.id} className="space-y-0.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-muted-foreground">
+            <span>
+              {new Date(revision.changedAt).toLocaleString('es')} · {EDIT_SOURCE[revision.source] ?? revision.source}
+              {revision.reason ? ` · ${revision.reason}` : ''}
+            </span>
+            <button
+              className="underline hover:text-foreground"
+              onClick={() => void api(`/api/v1/revisions/${revision.id}/revert`, { method: 'POST' }).then(onReverted)}
+            >
+              Restaurar lo anterior
+            </button>
+          </div>
+          {revision.changes.map((change) => (
+            <div key={change.field}>
+              <span className="font-medium">{change.field}:</span> <del className="text-muted-foreground">{String(change.before)}</del> →{' '}
+              <ins className="no-underline">{String(change.after)}</ins>
+            </div>
+          ))}
+        </li>
+      ))}
+    </ul>
   );
 }
 
