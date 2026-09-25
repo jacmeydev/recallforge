@@ -3,7 +3,7 @@
 // ============================================================================
 // 1. Security headers on all responses
 // 2. Rate limiting on auth and API routes
-// 3. Fast-reject for unauthenticated API requests
+// 3. Fast-reject for unauthenticated agent API requests
 // ============================================================================
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -40,9 +40,6 @@ function addSecurityHeaders(response: NextResponse): NextResponse {
   response.headers.set('X-Frame-Options', 'DENY');
   response.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
   response.headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
-  // Required for SharedArrayBuffer / fsrs-browser optimizer.
-  response.headers.set('Cross-Origin-Opener-Policy', 'same-origin');
-  response.headers.set('Cross-Origin-Embedder-Policy', 'require-corp');
   if (process.env.NODE_ENV === 'production') {
     response.headers.set(
       'Strict-Transport-Security',
@@ -69,8 +66,8 @@ export function proxy(req: NextRequest) {
     }
   }
 
-  // ── Rate limit sync & agent API ────────────────────────────────────
-  if (pathname.startsWith('/api/sync') || pathname.startsWith('/api/agent')) {
+  // ── Rate limit the agent-facing API ────────────────────────────────
+  if (pathname.startsWith('/api/v1/') || pathname === '/api/mcp') {
     const rl = checkRateLimit(`api:${ip}`, API_RATE_LIMIT);
     if (!rl.allowed) {
       const res = NextResponse.json(
@@ -83,7 +80,11 @@ export function proxy(req: NextRequest) {
 
     // ── Auth check for protected routes ──────────────────────────────
     const authHeader = req.headers.get('authorization');
-    if (authHeader?.startsWith('Bearer ')) {
+    if (
+      authHeader?.toLowerCase().startsWith('bearer ') ||
+      req.headers.get('x-api-key') ||
+      req.nextUrl.searchParams.get('key')
+    ) {
       return addSecurityHeaders(NextResponse.next());
     }
 
@@ -109,6 +110,6 @@ export function proxy(req: NextRequest) {
 export const config = {
   matcher: [
     '/api/:path*',
-    '/((?!_next/static|_next/image|favicon\\.ico|icons|manifest\\.json|sw\\.js).*)',
+    '/((?!_next/static|_next/image|favicon\\.ico).*)',
   ],
 };

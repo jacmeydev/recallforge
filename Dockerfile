@@ -1,10 +1,11 @@
 # ============================================================================
 # RecallForge — Production Dockerfile
 # ============================================================================
-# Multi-stage build for Next.js standalone output + better-sqlite3 native addon.
+# Multi-stage build: Next.js standalone output + better-sqlite3 (compiled in the build stages).
 # Usage:
 #   docker build -t recallforge .
 #   docker run -p 3030:3030 -v rf-data:/app/data -e AUTH_SECRET=... recallforge
+#   Agents connect to http://<host>:3030/api/mcp (MCP) or /api/v1 (REST).
 # ============================================================================
 
 FROM node:20-slim AS base
@@ -31,10 +32,6 @@ RUN AUTH_SECRET=build-placeholder-secret AUTH_TRUST_HOST=true npm run build
 # ── Production ──────────────────────────────────────────────────────────────
 FROM node:20-slim AS runner
 WORKDIR /app
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 make g++ && \
-    rm -rf /var/lib/apt/lists/*
 
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
