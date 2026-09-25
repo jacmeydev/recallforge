@@ -132,7 +132,9 @@ async function main(): Promise<void> {
             (result.skipped ? ` · ${result.skipped} ya estaban` : '') +
             ` (${((Date.now() - started) / 1000).toFixed(1)} s)`
         );
-        for (const warning of result.warnings) console.error(`  · ${warning}`);
+        for (const warning of result.warnings) {
+          console.error(`  · ${/personalise the scheduler/.test(warning) ? 'Tu historial alcanza para ajustar el algoritmo a tu memoria: ejecuta "recallforge optimize".' : warning}`);
+        }
         return;
       }
       const result = importData(getLocalUser().id, fs.readFileSync(args[0], 'utf8'), {
@@ -148,7 +150,12 @@ async function main(): Promise<void> {
     }
     case 'optimize': {
       const result = await optimizeScheduler(getLocalUser().id);
-      console.log(result.message);
+      const gain = Math.round(((result.before.logLoss - result.after.logLoss) / result.before.logLoss) * 100);
+      console.log(
+        result.applied
+          ? `Algoritmo ajustado a tu memoria con ${result.reviews} repasos: predice un ${gain}% mejor cuándo vas a olvidar.`
+          : 'Tus parámetros actuales ya predicen tu memoria igual de bien; no se cambió nada.'
+      );
       return;
     }
     case 'path':

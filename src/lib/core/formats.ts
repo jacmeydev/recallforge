@@ -44,23 +44,34 @@ function shuffle<T>(items: T[]): T[] {
 function distractors(card: CardRow, count: number): string[] {
   const db = getDb();
   const root = card.deck_name.split(DECK_SEPARATOR)[0];
-  const rows = db
-    .prepare(
-      `SELECT c.front, c.back, c.kind, c.cloze_ord, c.deck_id = @deckId AS same_deck FROM cards c JOIN decks d ON d.id = c.deck_id
-       WHERE c.user_id = @userId AND c.id != @id AND c.status = 'active' AND (c.note_id IS NULL OR c.note_id != @noteId)
-         AND (d.name = @root OR substr(d.name, 1, @rootLength) = @rootPrefix)
-       ORDER BY same_deck DESC, random() LIMIT 200`
-    )
-    .all({
-      userId: card.user_id,
-      id: card.id,
-      deckId: card.deck_id,
-      noteId: card.note_id ?? '',
-      root,
-      rootLength: root.length + DECK_SEPARATOR.length,
-      rootPrefix: `${root}${DECK_SEPARATOR}`,
-    })
-    .map((row) => ({ ...(row as { same_deck: number }), back: answerOf(row as CardRow) })) as Array<{ back: string; same_deck: number }>;
+  const params = {
+    userId: card.user_id,
+    id: card.id,
+    deckId: card.deck_id,
+    noteId: card.note_id ?? '',
+    root,
+    rootLength: root.length + DECK_SEPARATOR.length,
+    rootPrefix: `${root}${DECK_SEPARATOR}`,
+  };
+  const base = `SELECT c.front, c.back, c.kind, c.cloze_ord, c.deck_id = @deckId AS same_deck FROM cards c
+    WHERE c.user_id = @userId AND c.id != @id AND c.status = 'active' AND (c.note_id IS NULL OR c.note_id != @noteId)`;
+  // Same deck first (small, indexed); the whole subject only when the deck is too small.
+  let raw = db.prepare(`${base} AND c.deck_id = @deckId ORDER BY random() LIMIT 80`).all(params);
+  if (raw.length < count * 4) {
+    raw = raw.concat(
+      db
+        .prepare(
+          `${base} AND c.deck_id != @deckId AND c.deck_id IN (
+             SELECT d.id FROM decks d WHERE d.user_id = @userId AND (d.name = @root OR substr(d.name, 1, @rootLength) = @rootPrefix))
+           ORDER BY random() LIMIT 120`
+        )
+        .all(params)
+    );
+  }
+  const rows = raw.map((row) => ({ ...(row as { same_deck: number }), back: answerOf(row as CardRow) })) as Array<{
+    back: string;
+    same_deck: number;
+  }>;
 
   const picked: string[] = [];
   // Prefer answers of similar length so the right one does not stand out.

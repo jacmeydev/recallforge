@@ -205,6 +205,13 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    // New cards are served in creation order: keep that order in an index (large collections).
+    id: '2026_09_queue_order_index',
+    up(db) {
+      db.exec(`CREATE INDEX ix_cards_new_order ON cards(user_id, suspended, state, created_at)`);
+    },
+  },
 ];
 
 export function runMigrations(db: DB): string[] {

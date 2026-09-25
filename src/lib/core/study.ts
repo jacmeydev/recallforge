@@ -58,9 +58,10 @@ export const GradeSchema = z.object({
  * Siblings (other deletions of the same cloze note) answered today are held
  * back until tomorrow, like Anki does, so one card does not give away another.
  */
-const NOT_BURIED = `NOT (c.note_id IS NOT NULL AND EXISTS (
-  SELECT 1 FROM cards s JOIN review_logs r ON r.card_id = s.id
-  WHERE s.note_id = c.note_id AND s.id != c.id AND r.reviewed_at >= @dayStart AND r.mode != 'practice'))`;
+const NOT_BURIED = `(c.note_id IS NULL
+  OR c.note_id NOT IN (SELECT s.note_id FROM review_logs r JOIN cards s ON s.id = r.card_id
+    WHERE r.user_id = @userId AND r.reviewed_at >= @dayStart AND r.mode != 'practice' AND s.note_id IS NOT NULL)
+  OR c.id IN (SELECT r.card_id FROM review_logs r WHERE r.user_id = @userId AND r.reviewed_at >= @dayStart))`;
 
 interface QueueScope {
   settings: UserSettings;
@@ -231,12 +232,26 @@ function nextPracticeCard(userId: string, filter: StudyFilter, now: Date): NextC
     params.tag = filter.tag;
   }
   where.push(`NOT EXISTS (SELECT 1 FROM review_logs r WHERE r.card_id = c.id AND r.mode = 'practice' AND r.reviewed_at >= @since)`);
-  const rows = getDb().prepare(`${CARD_SELECT} WHERE ${where.join(' AND ')}`).all(params) as CardRow[];
-  const ranked = rows
+  const db = getDb();
+  const whereSql = where.join(' AND ');
+  const counts = db
+    .prepare(`SELECT COALESCE(SUM(c.state != 'new'), 0) AS seen, COALESCE(SUM(c.state = 'new'), 0) AS unseen FROM cards c WHERE ${whereSql}`)
+    .get(params) as { seen: number; unseen: number };
+  // Shortlist in SQL by how long each card has gone unreviewed relative to its stability (the
+  // quantity retrievability decreases with; unseen cards first), then rank the shortlist exactly.
+  const shortlist = db
+    .prepare(
+      `${CARD_SELECT} WHERE ${whereSql}
+       ORDER BY CASE WHEN c.state = 'new' OR c.stability <= 0 OR c.last_review_at IS NULL THEN 1e9
+                     ELSE (julianday(@now) - julianday(c.last_review_at)) / c.stability END DESC, random()
+       LIMIT 40`
+    )
+    .all({ ...params, now: now.toISOString() }) as CardRow[];
+  const ranked = shortlist
     .map((row) => ({ row, recall: retrievability(row, settings, now) ?? 0 }))
     .sort((a, b) => a.recall - b.recall || Math.random() - 0.5);
   const pick = ranked[0]?.row;
-  const remaining: QueueCounts = { learning: 0, review: rows.filter((r) => r.state !== 'new').length, new: rows.filter((r) => r.state === 'new').length };
+  const remaining: QueueCounts = { learning: 0, review: counts.seen, new: counts.unseen };
   if (!pick) {
     return { card: null, remaining, nextDueAt: null, message: 'Every card in this scope was practiced in the last few minutes.' };
   }
