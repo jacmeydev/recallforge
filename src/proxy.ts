@@ -37,7 +37,8 @@ export function proxy(req: NextRequest) {
   const { pathname, searchParams } = req.nextUrl;
   const isApi = pathname.startsWith('/api/');
 
-  if (isApi && (pathname.startsWith('/api/v1/') || pathname === '/api/mcp')) {
+  // Rate limiting only matters when the server is reachable by others (token mode); media are exempt.
+  if (requiredToken() && isApi && !pathname.startsWith('/api/v1/media/') && (pathname.startsWith('/api/v1/') || pathname === '/api/mcp')) {
     const limit = checkRateLimit(`api:${clientIp(req)}`, API_RATE_LIMIT);
     if (!limit.allowed) {
       const res = NextResponse.json({ error: { code: 'rate_limited', message: 'Too many requests' } }, { status: 429 });

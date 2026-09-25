@@ -9,6 +9,7 @@ import type { QuestionFormat } from '@/lib/core/formats';
 import type { GradeResult, NextCardResult, RevealResult } from '@/lib/core/study';
 import type { Rating } from '@/lib/core/types';
 import { CardSource, ExplainButton } from './card-source';
+import { RichText } from './rich-text';
 
 const RATINGS: Array<{ rating: Rating; label: string; key: string; variant: 'again' | 'hard' | 'good' | 'easy' }> = [
   { rating: 'again', label: 'Otra vez', key: '1', variant: 'again' },
@@ -331,7 +332,10 @@ export function ReviewSession({ deck, tag, mode = 'normal', format = 'recall' }:
       {notice && <p className="text-xs text-emerald-700 dark:text-emerald-400">{notice}</p>}
 
       <div className="space-y-6 rounded-2xl border bg-card p-5 shadow-sm sm:p-8">
-        <p className="whitespace-pre-wrap text-center text-xl leading-relaxed">{card.front}</p>
+        <RichText
+          className="text-center text-xl leading-relaxed"
+          text={revealed?.card.revealed && !practice ? revealed.card.revealed : card.front}
+        />
 
         {practice ? (
           <PracticeQuestion
@@ -373,8 +377,11 @@ export function ReviewSession({ deck, tag, mode = 'normal', format = 'recall' }:
                 <p className="whitespace-pre-wrap">{answer}</p>
               </div>
             )}
-            <p className="whitespace-pre-wrap text-center text-lg font-medium text-primary">{revealed.card.back}</p>
-            {revealed.card.explanation && <p className="whitespace-pre-wrap text-sm text-muted-foreground">{revealed.card.explanation}</p>}
+            {revealed.card.kind === 'cloze' && !practice ? null : (
+              <RichText className="text-center text-lg font-medium text-primary" text={revealed.card.back} />
+            )}
+            {revealed.card.cloze?.extra && <RichText className="text-sm" text={revealed.card.cloze.extra} />}
+            {revealed.card.explanation && <RichText className="text-sm text-muted-foreground" text={revealed.card.explanation} />}
             <CardSource card={revealed.card} />
             {revealed.recentAttempts.some((a) => a.rating === 'again' && a.answer) && (
               <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100">

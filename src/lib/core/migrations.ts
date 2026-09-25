@@ -177,6 +177,34 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    // Cloze cards (one card per {{cN::…}} deletion, grouped by note), images and
+    // other media stored in the database, external ids for Anki imports, and
+    // personal FSRS parameters.
+    id: '2026_09_cloze_media_anki',
+    up(db) {
+      db.exec(`
+        ALTER TABLE cards ADD COLUMN kind TEXT NOT NULL DEFAULT 'basic';
+        ALTER TABLE cards ADD COLUMN cloze_ord INTEGER;
+        ALTER TABLE cards ADD COLUMN note_id TEXT;
+        ALTER TABLE cards ADD COLUMN external_id TEXT;
+        CREATE INDEX ix_cards_note ON cards(note_id);
+        CREATE INDEX ix_cards_external ON cards(user_id, external_id);
+
+        CREATE TABLE media (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          filename TEXT NOT NULL,
+          mime_type TEXT NOT NULL,
+          bytes INTEGER NOT NULL,
+          sha256 TEXT NOT NULL,
+          data BLOB NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX ux_media_user_sha ON media(user_id, sha256);
+      `);
+    },
+  },
 ];
 
 export function runMigrations(db: DB): string[] {

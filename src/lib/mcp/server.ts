@@ -5,6 +5,9 @@
 // Tool names and semantics mirror the REST API one-to-one.
 // ============================================================================
 
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
@@ -13,7 +16,12 @@ import { deleteDeck, listDecks, updateDeck } from '@/lib/core/decks';
 import { deleteDocument, getDocument, importDocumentFile, importDocumentText, listDocuments, readDocument } from '@/lib/core/documents';
 import { AppError } from '@/lib/core/errors';
 import { explainCard } from '@/lib/core/explain';
+import { exportApkg, importApkg } from '@/lib/core/anki';
+import { exportCardsTsv, exportUserData } from '@/lib/core/export';
 import { importData } from '@/lib/core/import';
+import { optimizeScheduler } from '@/lib/core/optimizer';
+import { mediaPayload, saveMedia } from '@/lib/core/media';
+import { registerStudyApp } from './apps';
 import { updateSettings } from '@/lib/core/settings';
 import { getStats } from '@/lib/core/stats';
 import { getProgressMap } from '@/lib/core/progress';
@@ -25,6 +33,8 @@ export const MCP_SERVER_VERSION = '3.0.0';
 export const STUDY_PROTOCOL = `RecallForge is the learner's spaced-repetition memory (FSRS scheduler). Use it to run active-recall study sessions and to turn study material into flashcards. Talk to the learner in their language.
 
 STUDY SESSION
+Preferred: call study (optionally with deck, mode, format). Hosts that support MCP Apps (Claude, ChatGPT, VS Code…) show an interactive study widget in the chat, where the learner answers and grades with buttons or keys at full speed, with images, sources and undo. Do not ask the questions in chat while the widget is open. When the learner presses "Explícame", "Mejorar tarjeta" or "Que el tutor corrija mi respuesta" in the widget, you receive a message about that card: answer it (explain_card, propose an update_card, judge the answer by meaning and, if they were right, offer correct_grade). show_progress shows the progress map in the chat.
+If there is no widget (text-only clients, voice, or the learner prefers chat), run the session yourself:
 1. get_next_card (optionally filtered by deck or tag) returns only the question. Ask the learner the \`front\` text. You may rephrase lightly for flow, but never add hints, options or any part of the answer. When the card has suggestRephrase: true the learner has seen it many times: ask the same fact with different wording or from another angle (reverse direction, a short clinical vignette, "why…") so it is recalled, not recognised by its pattern. Never change the card for this.
 2. Wait for the learner's own attempt. Never answer for them. "I don't know" counts as a failed recall.
 3. reveal_answer(card_id) returns the expected answer (\`back\`), the \`explanation\`, the source (document, page and exact excerpt) and \`recentAttempts\`. Grade semantically: synonyms, equivalent terms (brand/generic names, abbreviations, eponyms), other word order and minor spelling mistakes are correct; missing or wrong key elements are not. When unsure, say what you are judging and let the learner decide.
@@ -51,6 +61,10 @@ EXAM PREPARATION
 When the learner has an exam, set it with update_deck(exam_date) on that subject. Then study with get_next_card(deck, mode: "exam") (and pass mode "exam" to grade_card): it ignores due dates and daily limits and asks first the cards they are least likely to remember on exam day. get_progress_map shows each subject's predicted recall on exam day. Exam mode is separate from the daily queue: it does not use the daily limits, and the daily queue is unaffected by it except for the cards actually answered.
 
 CREATING CARDS
+Two kinds of cards:
+- Basic: front (question) and back (short answer).
+- Cloze: front is a sentence with deletions, back is optional extra notes: "La {{c1::protamina}} revierte la {{c2::heparina}}" creates one card per cN (c1 hides "protamina", c2 hides "heparina"). Hints: {{c1::protamina::antídoto}}. Use cloze for definitions, lists of features, numbers and sentences from the source; one key term per deletion; group deletions that must be recalled together under the same cN.
+- Images: add_image returns ![description](media:ID) to paste into front, back or explanation (e.g. an anatomy picture with the question "¿Qué estructura señala la flecha?").
 Quality rules (from spaced-repetition research; the server flags violations in add_cards.warnings - fix them with update_card):
 - One fact per card; the front must have exactly one correct answer and make sense on its own, months later, without the source.
 - Ask for understanding, not recognition: prefer why/how/what/which, mechanisms, causes, comparisons, "what would you expect if…" over yes/no or true/false.
@@ -75,13 +89,22 @@ FROM A DOCUMENT (PDF, slides, notes, a web page…)
 YOUR ROLE: SUPERVISED, NEVER OPAQUE
 - Propose, never impose: new cards from material are drafts; edits to existing cards are proposed to the learner before update_card (always with a short reason). Every edit is recorded (card_history) and can be reverted (revert_revision).
 - Grading is always explained and can be overruled (correct_grade).
-- The learner owns the data: import_data restores a RecallForge backup or brings in CSV/TSV (Anki plain-text export); the web app exports JSON (everything) and TSV.
+- The learner owns the data: import_data brings in Anki decks (.apkg, e.g. AnKing or their own collection, with scheduling and history), RecallForge backups and CSV/TSV; export_data writes an .apkg for Anki/AnkiDroid/AnkiMobile (study on the phone), a full JSON backup or a TSV.
 
 PLANNING
 get_stats gives due counts, estimated minutes for today (from the learner's own pace), today's progress, 30-day retention, streak, a 7-day forecast with minutes and the weakest cards. get_progress_map gives the whole picture: every subject's mastery (estimated recall of all its cards right now), coverage, consolidated and weak cards, exam readiness, the study heatmap, document coverage and \`recommendations\` (what to do next, most urgent first). Use them to suggest what to study next, and present progress as a short summary with the next action, not decorative numbers. Streaks and heatmaps are information, never pressure. Timestamps are UTC ISO-8601; the learner's timezone is in get_stats.settings.`;
 
 function ok(data: unknown): CallToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(data) }] };
+}
+
+/** JSON plus the card's images as image blocks, so agents that see images can use them. */
+async function withImages(userId: string, fn: () => unknown, texts: (data: never) => Array<string | undefined | null>): Promise<CallToolResult> {
+  const result = await run(fn);
+  if (result.isError) return result;
+  const data = JSON.parse((result.content[0] as { text: string }).text);
+  const images = mediaPayload(userId, texts(data as never).filter((t): t is string => Boolean(t)), 3 * 1024 * 1024);
+  return { content: [...result.content, ...images.map((image) => ({ type: 'image' as const, data: image.data, mimeType: image.mimeType }))] };
 }
 
 function fail(error: unknown): CallToolResult {
@@ -124,6 +147,9 @@ export function createMcpServer(user: AuthUser): McpServer {
     { instructions: STUDY_PROTOCOL }
   );
 
+  // ── Interactive study in the chat (MCP Apps) ──────────────────────────
+  registerStudyApp(server, user);
+
   // ── Study ──────────────────────────────────────────────────────────────
   server.registerTool(
     'get_next_card',
@@ -139,7 +165,8 @@ export function createMcpServer(user: AuthUser): McpServer {
       },
       annotations: { readOnlyHint: true },
     },
-    ({ deck, tag, mode, format }) => run(() => nextCard(user.id, { deck, tag, mode, format }))
+    ({ deck, tag, mode, format }) =>
+      withImages(user.id, () => nextCard(user.id, { deck, tag, mode, format }), (d: { card?: { front: string } | null }) => [d.card?.front])
   );
 
   server.registerTool(
@@ -151,7 +178,12 @@ export function createMcpServer(user: AuthUser): McpServer {
       inputSchema: { card_id: z.string() },
       annotations: { readOnlyHint: true },
     },
-    ({ card_id }) => run(() => revealCard(user.id, card_id))
+    ({ card_id }) =>
+      withImages(user.id, () => revealCard(user.id, card_id), (d: { card: { front: string; back: string; explanation: string; revealed?: string } }) => [
+        d.card.revealed ?? d.card.front,
+        d.card.back,
+        d.card.explanation,
+      ])
   );
 
   server.registerTool(
@@ -451,18 +483,71 @@ export function createMcpServer(user: AuthUser): McpServer {
   );
 
   server.registerTool(
-    'import_data',
+    'add_image',
     {
-      title: 'Import cards or a backup',
+      title: 'Add image',
       description:
-        'Import a RecallForge JSON export (restores subjects, documents, cards with their memory state, reviews and edit history; items that already exist are kept) or CSV/TSV text with front and back columns (Anki "Notes in Plain Text" export, spreadsheets). Pass the file content as text.',
+        'Store an image (anatomy, histology, radiology, ECG, a diagram, a slide or a PDF page you rendered…) and get the Markdown to place in a card: ![description](media:ID). Put it in front for "what is this?" cards or in back/explanation as support. Images are shown in the widget and the web app, and sent to you with the card.',
       inputSchema: {
-        content: z.string().describe('File content: JSON export, CSV or TSV'),
-        deck: z.string().optional().describe('Subject for CSV/TSV lines without a deck column (default "Importado")'),
-        draft: z.boolean().optional().describe('CSV/TSV: create the cards as drafts to review first'),
+        content_base64: z.string().describe('The image file, base64-encoded (PNG, JPEG, GIF, WebP, SVG; max 10 MB)'),
+        filename: z.string().describe('e.g. "plexo-braquial.png"'),
       },
     },
-    ({ content, deck, draft }) => run(() => importData(user.id, content, { deck, draft }))
+    ({ content_base64, filename }) => run(() => ({ media: saveMedia(user.id, { filename, data: new Uint8Array(Buffer.from(content_base64, 'base64')) }) }))
+  );
+
+  server.registerTool(
+    'import_data',
+    {
+      title: 'Import an Anki deck, cards or a backup',
+      description:
+        'Import an Anki package (.apkg/.colpkg: shared decks like AnKing or the learner\'s own collection, with cloze, images, tags, suspended cards, scheduling and review history), a RecallForge JSON backup (merged without duplicates) or CSV/TSV with front and back columns. For files on this computer pass file_path (e.g. "~/Downloads/AnKing.apkg"); for text you already have, pass content. Re-importing the same deck only adds what is new.',
+      inputSchema: {
+        file_path: z.string().optional().describe('Path of a file on this computer: .apkg, .colpkg, .json, .csv, .tsv or .txt'),
+        content: z.string().optional().describe('File content as text (JSON export, CSV or TSV)'),
+        deck: z.string().optional().describe('Anki: parent subject for the imported decks. CSV/TSV: subject for lines without a deck column (default "Importado")'),
+        draft: z.boolean().optional().describe('Create the cards as drafts to review first'),
+      },
+    },
+    ({ file_path, content, deck, draft }) =>
+      run(async () => {
+        if (file_path) {
+          const resolved = path.resolve(file_path.replace(/^~(?=$|[\\/])/, os.homedir()));
+          if (!fs.existsSync(resolved)) throw new AppError(400, 'bad_request', `File not found: ${resolved}`);
+          if (/\.(apkg|colpkg)$/i.test(resolved)) return importApkg(user.id, resolved, { deck, draft });
+          return importData(user.id, fs.readFileSync(resolved, 'utf8'), { deck, draft });
+        }
+        if (!content) throw new AppError(400, 'bad_request', 'Pass file_path or content');
+        return importData(user.id, content, { deck, draft });
+      })
+  );
+
+  server.registerTool(
+    'export_data',
+    {
+      title: 'Export (Anki, backup, spreadsheet)',
+      description:
+        'Write the learner\'s cards to a file on this computer: "apkg" opens in Anki, AnkiDroid and AnkiMobile (study on the phone, keeps cloze, images and scheduling); "json" is the complete backup (everything, re-importable); "tsv" opens in spreadsheets. Optionally only one subject.',
+      inputSchema: {
+        format: z.enum(['apkg', 'json', 'tsv']),
+        file_path: z.string().describe('Where to write it, e.g. "~/Desktop/recallforge.apkg" (existing files are not overwritten)'),
+        deck: z.string().optional().describe('Only this subject (apkg and tsv)'),
+      },
+    },
+    ({ format, file_path, deck }) =>
+      run(async () => {
+        const resolved = path.resolve(file_path.replace(/^~(?=$|[\\/])/, os.homedir()));
+        if (fs.existsSync(resolved)) throw new AppError(400, 'bad_request', `${resolved} already exists; choose another name`);
+        const data =
+          format === 'apkg'
+            ? await exportApkg(user.id, { deck })
+            : format === 'tsv'
+              ? exportCardsTsv(user.id, deck)
+              : JSON.stringify(exportUserData(user.id), null, 2);
+        fs.mkdirSync(path.dirname(resolved), { recursive: true });
+        fs.writeFileSync(resolved, data);
+        return { written: resolved, bytes: fs.statSync(resolved).size };
+      })
   );
 
   // ── Decks & settings ───────────────────────────────────────────────────
@@ -532,6 +617,17 @@ export function createMcpServer(user: AuthUser): McpServer {
           timezone: args.timezone,
         }),
       }))
+  );
+
+  server.registerTool(
+    'optimize_scheduler',
+    {
+      title: 'Personalise the scheduler',
+      description:
+        "Fit the FSRS scheduler to the learner's own review history (the same optimizer Anki uses). Needs ~200+ reviews, e.g. after a few weeks of study or after importing an Anki collection with history. Applies the new parameters only if they predict the learner's memory better, and reports by how much. Suggest it once a month.",
+      inputSchema: { apply: z.boolean().optional().describe('Default true; false only reports what would change') },
+    },
+    ({ apply }) => run(() => optimizeScheduler(user.id, { apply }))
   );
 
   // ── Prompts (slash commands in MCP clients) ────────────────────────────

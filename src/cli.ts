@@ -18,7 +18,9 @@ import { fileURLToPath } from 'url';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { closeDb, getDb, resolveDatabasePath } from '@/lib/core/db';
 import { exportCardsTsv, exportUserData } from '@/lib/core/export';
+import { exportApkg, importApkg } from '@/lib/core/anki';
 import { importData } from '@/lib/core/import';
+import { optimizeScheduler } from '@/lib/core/optimizer';
 import { getStats } from '@/lib/core/stats';
 import { getLocalUser } from '@/lib/core/users';
 import { createMcpServer } from '@/lib/mcp/server';
@@ -29,10 +31,11 @@ Uso:
   recallforge mcp             Servidor MCP por stdio (lo arranca tu agente)
   recallforge ui [--port N]   Abre la web local (por defecto http://127.0.0.1:3030)
   recallforge stats           Resumen de hoy
-  recallforge export [archivo] Copia de seguridad completa en JSON (.tsv → tarjetas para Anki/hojas de cálculo)
+  recallforge export [archivo] Copia completa en JSON (.apkg → para Anki/AnkiDroid/AnkiMobile, .tsv → hojas de cálculo)
   recallforge backup [carpeta] Copia de la base de datos (por defecto ~/.recallforge/backups)
   recallforge import <archivo> [--deck Materia] [--draft]
-                               Restaura una exportación JSON o importa tarjetas CSV/TSV (Anki)
+                               Importa un mazo de Anki (.apkg), una copia JSON o tarjetas CSV/TSV
+  recallforge optimize        Ajusta FSRS a tu propio historial de repasos
   recallforge path            Muestra dónde están tus datos
 
 Ejemplo (Claude Code):
@@ -93,6 +96,12 @@ async function main(): Promise<void> {
     case 'stats':
       return printStats();
     case 'export': {
+      if (args[0]?.toLowerCase().endsWith('.apkg')) {
+        const deckIndex = args.indexOf('--deck');
+        fs.writeFileSync(args[0], await exportApkg(getLocalUser().id, { deck: deckIndex >= 0 ? args[deckIndex + 1] : undefined }));
+        console.error(`Exportado a ${args[0]} (ábrelo con Anki, AnkiDroid o AnkiMobile)`);
+        return;
+      }
       const tsv = args[0]?.toLowerCase().endsWith('.tsv') || args[0]?.toLowerCase().endsWith('.txt');
       const json = tsv ? exportCardsTsv(getLocalUser().id) : JSON.stringify(exportUserData(getLocalUser().id), null, 2);
       if (args[0]) {
@@ -115,6 +124,17 @@ async function main(): Promise<void> {
     case 'import': {
       if (!args[0]) throw new Error('Uso: recallforge import <archivo> [--deck Materia] [--draft]');
       const deckIndex = args.indexOf('--deck');
+      if (/\.(apkg|colpkg)$/i.test(args[0])) {
+        const started = Date.now();
+        const result = await importApkg(getLocalUser().id, args[0], { deck: deckIndex >= 0 ? args[deckIndex + 1] : undefined, draft: args.includes('--draft') });
+        console.log(
+          `Importado de Anki: ${result.cards} tarjetas, ${result.reviews} repasos del historial, ${result.decks} materias nuevas` +
+            (result.skipped ? ` · ${result.skipped} ya estaban` : '') +
+            ` (${((Date.now() - started) / 1000).toFixed(1)} s)`
+        );
+        for (const warning of result.warnings) console.error(`  · ${warning}`);
+        return;
+      }
       const result = importData(getLocalUser().id, fs.readFileSync(args[0], 'utf8'), {
         deck: deckIndex >= 0 ? args[deckIndex + 1] : undefined,
         draft: args.includes('--draft'),
@@ -124,6 +144,11 @@ async function main(): Promise<void> {
           (result.skipped ? ` · ${result.skipped} omitidos (ya existían o duplicados)` : '')
       );
       for (const warning of result.warnings.slice(0, 10)) console.error(`  · ${warning}`);
+      return;
+    }
+    case 'optimize': {
+      const result = await optimizeScheduler(getLocalUser().id);
+      console.log(result.message);
       return;
     }
     case 'path':

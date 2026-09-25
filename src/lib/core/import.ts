@@ -26,7 +26,7 @@ export const ImportOptionsSchema = z.object({
 });
 
 export interface ImportResult {
-  format: 'recallforge' | 'delimited';
+  format: 'recallforge' | 'delimited' | 'anki';
   decks: number;
   documents: number;
   cards: number;

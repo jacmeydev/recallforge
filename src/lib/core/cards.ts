@@ -10,15 +10,18 @@ import { deckScopeSql, getOrCreateDeck } from './decks';
 import { badRequest, notFound } from './errors';
 import { getSettings } from './settings';
 import { checkCardQuality } from './quality';
+import { clozeAnswer, clozeOrdinals, clozePlain, clozeQuestion, clozeRevealed, isCloze } from './cloze';
 import { containsLoosely, contentWords, similarity } from './text';
 import { retrievability } from './scheduler';
-import type { Card, CardRow, QuestionCard, StudySettings } from './types';
+import type { Card, CardKind, CardRow, QuestionCard, StudySettings } from './types';
 
 const tagsSchema = z.array(z.string().trim().min(1).max(100)).max(30);
 
 export const CardInputSchema = z.object({
-  front: z.string().trim().min(1).max(4000),
-  back: z.string().trim().min(1).max(8000),
+  /** Question, or a cloze text such as "La {{c1::protamina}} revierte la {{c2::heparina}}" (one card per cN). */
+  front: z.string().trim().min(1).max(8000),
+  /** Answer. Optional for cloze cards, where it holds extra notes shown after answering. */
+  back: z.string().trim().max(8000).optional(),
   explanation: z.string().trim().max(8000).optional(),
   source: z.string().trim().max(500).optional(),
   /** Exact passage of the source the card is based on (shown to the learner, checked against the document). */
@@ -103,11 +106,40 @@ function normalizeFront(front: string): string {
   return front.normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
+/** Duplicate key: the question text, plus the deletion number for cloze cards. */
+function frontKey(front: string, ord: number | null | undefined): string {
+  return ord ? `${normalizeFront(front)}#c${ord}` : normalizeFront(front);
+}
+
+/** Cloze-specific checks (the basic question/answer heuristics do not apply). */
+function checkClozeQuality(text: string): string[] {
+  const issues: string[] = [];
+  const ords = clozeOrdinals(text);
+  if (ords.length > 8) issues.push(`This note has ${ords.length} deletions; split it so each card tests one idea.`);
+  for (const ord of ords) {
+    const answer = clozeAnswer(text, ord);
+    if (answer.length > 80) issues.push(`Deletion c${ord} is long (${answer.length} characters); hide a key term, not a sentence.`);
+  }
+  if (clozePlain(text).length > 600) issues.push('The cloze text is long; keep only the context needed to answer.');
+  return issues;
+}
+
+/** The answer the learner must produce (for cloze cards, this card's deleted text). */
+export function answerOf(row: Pick<CardRow, 'front' | 'back' | 'kind' | 'cloze_ord'>): string {
+  return row.kind === 'cloze' ? clozeAnswer(row.front, row.cloze_ord ?? 1) : row.back;
+}
+
+/** The question as asked (for cloze cards, with this card's deletion hidden). */
+export function questionOf(row: Pick<CardRow, 'front' | 'kind' | 'cloze_ord'>): string {
+  return row.kind === 'cloze' ? clozeQuestion(row.front, row.cloze_ord ?? 1) : row.front;
+}
+
 export function toQuestion(row: CardRow): QuestionCard {
   return {
     id: row.id,
     deck: { id: row.deck_id, name: row.deck_name },
-    front: row.front,
+    kind: row.kind ?? 'basic',
+    front: questionOf(row),
     tags: parseTags(row.tags),
     state: row.state,
     reps: row.reps,
@@ -120,9 +152,16 @@ export function toQuestion(row: CardRow): QuestionCard {
 export const REPHRASE_AFTER_REPS = 4;
 
 export function toCard(row: CardRow, settings: StudySettings, now = new Date()): Card {
+  const cloze = row.kind === 'cloze';
   return {
     ...toQuestion(row),
-    back: row.back,
+    back: answerOf(row),
+    ...(cloze
+      ? {
+          revealed: clozeRevealed(row.front, row.cloze_ord ?? 1),
+          cloze: { text: row.front, extra: row.back, ord: row.cloze_ord ?? 1, noteId: row.note_id ?? null },
+        }
+      : {}),
     explanation: row.explanation,
     source: row.source,
     excerpt: row.excerpt ?? '',
@@ -234,6 +273,7 @@ export function addCards(userId: string, input: unknown): AddCardsResult {
 
   for (const [index, card] of cards.entries()) {
     if (!card.deck && !defaultDeck) throw badRequest(`Card ${index} has no deck (set "deck" on the request or the card)`);
+    if (!card.back && !isCloze(card.front)) throw badRequest(`Card ${index} needs a back (answer), or cloze deletions like {{c1::…}} in front`);
     if (card.documentPart !== undefined && (!document || card.documentPart >= document.parts)) {
       throw badRequest(`Card ${index} has an invalid documentPart`);
     }
@@ -241,8 +281,9 @@ export function addCards(userId: string, input: unknown): AddCardsResult {
 
   const result: AddCardsResult = { created: [], skipped: [], warnings: [], decksCreated: [], status, dryRun: Boolean(dryRun) };
   const insert = db.prepare(`
-    INSERT INTO cards (id, user_id, deck_id, front, back, explanation, source, excerpt, tags, state, due_at, status, document_id, document_part, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ?)
+    INSERT INTO cards (id, user_id, deck_id, front, back, explanation, source, excerpt, tags, state, due_at, status, document_id, document_part,
+      kind, cloze_ord, note_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const partRow = db.prepare(`SELECT label, text FROM document_parts WHERE document_id = ? AND idx = ?`);
 
@@ -259,7 +300,10 @@ export function addCards(userId: string, input: unknown): AddCardsResult {
            WHERE c.user_id = ? AND (d.name = ? OR substr(d.name, 1, ?) = ?)`
         )
         .all(userId, root, root.length + 2, `${root}::`) as Array<{ id: string; front: string; back: string }>;
-      for (const row of rows) index.add(row);
+      for (const row of rows) {
+        if (isCloze(row.front)) index.add({ id: row.id, front: clozePlain(row.front), back: clozePlain(row.front) });
+        else index.add(row);
+      }
       indexes.set(root.toLowerCase(), index);
     }
     return index;
@@ -271,8 +315,12 @@ export function addCards(userId: string, input: unknown): AddCardsResult {
       let map = fronts.get(deckId);
       if (!map) {
         map = new Map();
-        const rows = db.prepare(`SELECT id, front FROM cards WHERE deck_id = ?`).all(deckId) as Array<{ id: string; front: string }>;
-        for (const row of rows) map.set(normalizeFront(row.front), row.id);
+        const rows = db.prepare(`SELECT id, front, cloze_ord FROM cards WHERE deck_id = ?`).all(deckId) as Array<{
+          id: string;
+          front: string;
+          cloze_ord: number | null;
+        }>;
+        for (const row of rows) map.set(frontKey(row.front, row.cloze_ord), row.id);
         fronts.set(deckId, map);
       }
       return map;
@@ -282,46 +330,61 @@ export function addCards(userId: string, input: unknown): AddCardsResult {
       const { deck, created } = getOrCreateDeck(userId, card.deck ?? defaultDeck!);
       if (created) result.decksCreated.push(deck.name);
       const existing = frontsFor(deck.id);
-      const key = normalizeFront(card.front);
-      const duplicateOf = existing.get(key);
-      if (duplicateOf && !allowDuplicates) {
-        result.skipped.push({ index, front: card.front, reason: 'duplicate front in deck', existingCardId: duplicateOf });
-        continue;
-      }
-      // Stagger creation times by a millisecond so new cards keep their input order.
-      const createdAt = new Date(Date.now() + index).toISOString();
-      const id = genId();
+      const kind: CardKind = isCloze(card.front) ? 'cloze' : 'basic';
+      const ords = kind === 'cloze' ? clozeOrdinals(card.front) : [null];
+      const noteId = kind === 'cloze' ? genId() : null;
       const part =
         document && card.documentPart !== undefined
           ? (partRow.get(document.id, card.documentPart) as { label: string; text: string } | undefined)
           : undefined;
       const source = card.source ?? (document ? [document.title, part?.label].filter(Boolean).join(', ') : '');
-      const issues = [...checkCardQuality(card), ...indexFor(deck.name).check(card.front, card.back)];
+      const plain = kind === 'cloze' ? clozePlain(card.front) : card.front;
+      const issues =
+        kind === 'cloze'
+          ? [...checkClozeQuality(card.front), ...indexFor(deck.name).check(plain, plain)]
+          : [...checkCardQuality({ front: card.front, back: card.back ?? '' }), ...indexFor(deck.name).check(card.front, card.back ?? '')];
       if (document && card.excerpt && part && !containsLoosely(part.text, card.excerpt)) {
         issues.push(`The excerpt was not found in ${part.label} of "${document.title}"; quote the source text exactly.`);
       }
       if (document && !card.excerpt) issues.push('Add the exact excerpt of the source this card comes from.');
-      insert.run(
-        id,
-        userId,
-        deck.id,
-        card.front,
-        card.back,
-        card.explanation ?? '',
-        source,
-        card.excerpt ?? '',
-        JSON.stringify(normalizeTags(card.tags)),
-        createdAt,
-        status,
-        document?.id ?? null,
-        card.documentPart ?? null,
-        createdAt,
-        createdAt
-      );
-      existing.set(key, id);
-      indexFor(deck.name).add({ id, front: card.front, back: card.back });
-      result.created.push({ id, deck: deck.name, front: card.front });
-      if (issues.length > 0) result.warnings.push({ index, cardId: dryRun ? null : id, front: card.front, issues });
+
+      let firstId: string | null = null;
+      for (const ord of ords) {
+        const key = frontKey(card.front, ord);
+        const duplicateOf = existing.get(key);
+        if (duplicateOf && !allowDuplicates) {
+          result.skipped.push({ index, front: card.front, reason: 'duplicate front in deck', existingCardId: duplicateOf });
+          continue;
+        }
+        // Stagger creation times by a millisecond so new cards keep their input order.
+        const createdAt = new Date(Date.now() + index * 50 + (ord ?? 0)).toISOString();
+        const id = genId();
+        insert.run(
+          id,
+          userId,
+          deck.id,
+          card.front,
+          card.back ?? '',
+          card.explanation ?? '',
+          source,
+          card.excerpt ?? '',
+          JSON.stringify(normalizeTags(card.tags)),
+          createdAt,
+          status,
+          document?.id ?? null,
+          card.documentPart ?? null,
+          kind,
+          ord,
+          noteId,
+          createdAt,
+          createdAt
+        );
+        existing.set(key, id);
+        firstId ??= id;
+        result.created.push({ id, deck: deck.name, front: ord === null ? card.front : clozeQuestion(card.front, ord) });
+      }
+      if (firstId) indexFor(deck.name).add({ id: firstId, front: plain, back: kind === 'cloze' ? plain : card.back ?? '' });
+      if (issues.length > 0 && firstId) result.warnings.push({ index, cardId: dryRun ? null : firstId, front: card.front, issues });
     }
     if (dryRun) throw new DryRunRollback();
   });
@@ -400,6 +463,7 @@ export function updateCard(userId: string, id: string, patch: unknown, editSourc
       id,
       userId
     );
+    if (row.kind === 'cloze' || isCloze(after.front)) syncClozeNote(userId, id, after, deck.id, now);
     if (JSON.stringify(before) !== JSON.stringify(after)) {
       db.prepare(
         `INSERT INTO card_revisions (id, user_id, card_id, changed_at, source, reason, before, after) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
@@ -407,6 +471,68 @@ export function updateCard(userId: string, id: string, patch: unknown, editSourc
     }
   })();
   return getCard(userId, id);
+}
+
+/**
+ * Keep every card of a cloze note in step after an edit: shared content goes to
+ * the siblings, a new {{cN::…}} gets its own card, and a removed one is
+ * suspended (never deleted, so its history is kept). A basic card edited into
+ * cloze text becomes a cloze note.
+ */
+function syncClozeNote(userId: string, cardId: string, content: CardContent, deckId: string, now: string): void {
+  const db = getDb();
+  const card = db.prepare(`SELECT * FROM cards WHERE id = ?`).get(cardId) as CardRow;
+  const ords = clozeOrdinals(content.front);
+  if (ords.length === 0) {
+    if (card.kind === 'cloze') db.prepare(`UPDATE cards SET kind = 'basic', cloze_ord = NULL WHERE id = ?`).run(cardId);
+    return;
+  }
+  let noteId = card.note_id;
+  if (card.kind !== 'cloze' || !noteId) {
+    noteId = noteId ?? genId();
+    db.prepare(`UPDATE cards SET kind = 'cloze', cloze_ord = ?, note_id = ? WHERE id = ?`).run(ords.includes(card.cloze_ord ?? -1) ? card.cloze_ord : ords[0], noteId, cardId);
+  }
+  db.prepare(
+    `UPDATE cards SET front = @front, back = @back, explanation = @explanation, source = @source, excerpt = @excerpt, tags = @tags,
+       deck_id = @deckId, updated_at = @now WHERE note_id = @noteId AND user_id = @userId AND id != @cardId`
+  ).run({ ...content, tags: JSON.stringify(content.tags), deckId, now, noteId, userId, cardId });
+  const siblings = db.prepare(`SELECT id, cloze_ord, suspended FROM cards WHERE note_id = ? AND user_id = ?`).all(noteId, userId) as Array<{
+    id: string;
+    cloze_ord: number | null;
+    suspended: number;
+  }>;
+  for (const sibling of siblings) {
+    if (sibling.cloze_ord !== null && !ords.includes(sibling.cloze_ord) && !sibling.suspended) {
+      db.prepare(`UPDATE cards SET suspended = 1, updated_at = ? WHERE id = ?`).run(now, sibling.id);
+    }
+  }
+  const template = db.prepare(`SELECT * FROM cards WHERE id = ?`).get(cardId) as CardRow;
+  for (const ord of ords) {
+    if (siblings.some((sibling) => sibling.cloze_ord === ord)) continue;
+    db.prepare(
+      `INSERT INTO cards (id, user_id, deck_id, front, back, explanation, source, excerpt, tags, state, due_at, status, document_id, document_part,
+         kind, cloze_ord, note_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, 'cloze', ?, ?, ?, ?)`
+    ).run(
+      genId(),
+      userId,
+      deckId,
+      content.front,
+      content.back,
+      content.explanation,
+      content.source,
+      content.excerpt,
+      JSON.stringify(content.tags),
+      now,
+      template.status,
+      template.document_id,
+      template.document_part,
+      ord,
+      noteId,
+      now,
+      now
+    );
+  }
 }
 
 export interface CardRevision {

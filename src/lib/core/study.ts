@@ -54,6 +54,14 @@ export const GradeSchema = z.object({
   answerTrue: z.boolean().optional(),
 });
 
+/**
+ * Siblings (other deletions of the same cloze note) answered today are held
+ * back until tomorrow, like Anki does, so one card does not give away another.
+ */
+const NOT_BURIED = `NOT (c.note_id IS NOT NULL AND EXISTS (
+  SELECT 1 FROM cards s JOIN review_logs r ON r.card_id = s.id
+  WHERE s.note_id = c.note_id AND s.id != c.id AND r.reviewed_at >= @dayStart AND r.mode != 'practice'))`;
+
 interface QueueScope {
   settings: UserSettings;
   where: string;
@@ -71,6 +79,7 @@ function buildScope(userId: string, filter: StudyFilter, now: Date): QueueScope 
   const params: Record<string, unknown> = {
     userId,
     now: now.toISOString(),
+    dayStart: day.start.toISOString(),
     dayEnd: day.end.toISOString(),
   };
   if (filter.deck) {
@@ -108,8 +117,8 @@ function queueCounts(scope: QueueScope): QueueCounts {
     .prepare(
       `SELECT
          COALESCE(SUM(c.state IN ('learning', 'relearning') AND c.due_at <= @now), 0) AS learning,
-         COALESCE(SUM(c.state = 'review' AND c.due_at < @dayEnd), 0) AS review,
-         COALESCE(SUM(c.state = 'new'), 0) AS new_cards,
+         COALESCE(SUM(c.state = 'review' AND c.due_at < @dayEnd AND ${NOT_BURIED}), 0) AS review,
+         COALESCE(SUM(c.state = 'new' AND ${NOT_BURIED}), 0) AS new_cards,
          COALESCE(SUM(c.state IN ('learning', 'relearning') AND c.due_at <= @learnAhead), 0) AS learn_ahead
        FROM cards c WHERE ${scope.where}`
     )
@@ -135,8 +144,8 @@ function pickNext(scope: QueueScope): CardRow | undefined {
 
   return (
     first(`c.state IN ('learning', 'relearning') AND c.due_at <= @now`, 'c.due_at ASC') ??
-    (scope.reviewRemaining > 0 ? first(`c.state = 'review' AND c.due_at < @dayEnd`, 'c.due_at ASC') : undefined) ??
-    (scope.newRemaining > 0 ? first(`c.state = 'new'`, 'c.created_at ASC, c.rowid ASC') : undefined) ??
+    (scope.reviewRemaining > 0 ? first(`c.state = 'review' AND c.due_at < @dayEnd AND ${NOT_BURIED}`, 'c.due_at ASC') : undefined) ??
+    (scope.newRemaining > 0 ? first(`c.state = 'new' AND ${NOT_BURIED}`, 'c.created_at ASC, c.rowid ASC') : undefined) ??
     first(`c.state IN ('learning', 'relearning') AND c.due_at <= @learnAhead`, 'c.due_at ASC', {
       learnAhead: scope.learnAheadUntil.toISOString(),
     })

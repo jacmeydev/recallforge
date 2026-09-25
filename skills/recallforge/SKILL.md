@@ -1,13 +1,13 @@
 ---
 name: recallforge
-description: Run active-recall study sessions and create high-quality flashcards in the learner's RecallForge spaced-repetition memory (FSRS). Use when the learner wants to be quizzed, review what is due, turn a PDF, slides, notes or any document into flashcards, organize subjects, check study progress, or fix existing cards.
+description: Run active-recall study sessions and create high-quality flashcards (basic, cloze, with images) in the learner's RecallForge spaced-repetition memory (FSRS). Use when the learner wants to be quizzed, review what is due, turn a PDF, slides, notes or any document into flashcards, import or export Anki decks (.apkg), organize subjects, check study progress, or fix existing cards.
 ---
 
 # RecallForge
 
 RecallForge is the learner's spaced-repetition memory. It stores question/answer cards and schedules each one with FSRS. You ask the questions, judge the answers and report how well the learner recalled; RecallForge decides when each card comes back.
 
-If a `recallforge` MCP server is connected, use its tools (same names and semantics as below); it is the preferred way. Otherwise call the REST API of the learner's local RecallForge web app.
+If a `recallforge` MCP server is connected, use its tools (same names and semantics as below); it is the preferred way, and its `study` tool opens an interactive study widget right in the chat on clients that support MCP Apps. Otherwise call the REST API of the learner's local RecallForge web app.
 
 ## Setup (REST)
 
@@ -63,6 +63,17 @@ Pass the same `mode`/`format` to `study/next` and `study/grade`.
 ## Progress
 
 `GET /api/v1/progress` returns every subject's mastery (estimated recall of all its cards now; unseen cards count as 0), coverage, consolidated and weak counts, exam readiness, `workload` (minutes due today at the learner's own pace), `recommendations` (what to do next, most urgent first), a daily study heatmap and document coverage. Summarize it briefly with the next action; streaks and heatmaps are information, never pressure.
+
+## Cloze cards and images
+
+- Cloze: put deletions in `front` with Anki syntax and leave `back` for optional extra notes: `{"front":"La {{c1::protamina}} revierte la {{c2::heparina::anticoagulante}}","back":"Se une por carga"}` creates one card per cN. The card's question hides its deletion as `[…]` (or `[hint]`); `card.back` in reveal is the hidden text and `card.revealed` the full sentence with the answer marked `==like this==`.
+- Images: `POST /api/v1/media` (multipart `file`, or JSON `{filename, contentBase64}`) returns `media.markdown` (`![alt](media:ID)`) to paste into front, back or explanation.
+
+## Anki decks
+
+- Import: `curl -F file=@deck.apkg -F deck=Medicina "$RECALLFORGE_URL/api/v1/import"` (cloze, images, tags, suspended cards, scheduling and review history; re-importing only adds what is new). Large decks: `node dist/cli.mjs import deck.apkg`.
+- Export for the phone (AnkiDroid/AnkiMobile): `GET /api/v1/export?format=apkg&deck=`.
+- After ~200 reviews (or an imported history): `POST /api/v1/settings/optimize` fits FSRS to the learner's memory.
 
 ## Creating cards
 

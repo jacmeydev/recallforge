@@ -4,7 +4,7 @@
 
 export type CardState = 'new' | 'learning' | 'review' | 'relearning';
 export type Rating = 'again' | 'hard' | 'good' | 'easy';
-export type ReviewSource = 'agent' | 'web' | 'api' | 'legacy';
+export type ReviewSource = 'agent' | 'web' | 'api' | 'legacy' | 'anki';
 
 export const RATINGS: readonly Rating[] = ['again', 'hard', 'good', 'easy'];
 
@@ -71,11 +71,15 @@ export interface DeckSummary extends Deck {
 }
 
 export type CardStatus = 'active' | 'draft';
+/** basic: front/back. cloze: a text with {{c1::…}} deletions, one card per deletion. */
+export type CardKind = 'basic' | 'cloze';
 
 /** What the learner may see before answering. Never contains the answer. */
 export interface QuestionCard {
   id: string;
   deck: { id: string; name: string };
+  kind: CardKind;
+  /** The question. For cloze cards, the text with this card's deletion shown as […] (or its hint). */
   front: string;
   tags: string[];
   state: CardState;
@@ -89,7 +93,12 @@ export interface QuestionCard {
 }
 
 export interface Card extends QuestionCard {
+  /** The answer. For cloze cards, the deleted text of this card. */
   back: string;
+  /** Cloze cards: the full text with the answer marked ==like this== (for display). */
+  revealed?: string;
+  /** Cloze cards: the editable source ({{c1::…}}) and extra notes shared by the note's cards. */
+  cloze?: { text: string; extra: string; ord: number; noteId: string | null };
   explanation: string;
   source: string;
   /** Exact passage of the source the card comes from. */
@@ -126,6 +135,10 @@ export interface CardRow {
   explanation: string;
   source: string;
   excerpt: string;
+  kind?: CardKind;
+  cloze_ord?: number | null;
+  note_id?: string | null;
+  external_id?: string | null;
   tags: string;
   state: CardState;
   due_at: string;

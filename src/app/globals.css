@@ -74,3 +74,30 @@
     -moz-osx-font-smoothing: grayscale;
   }
 }
+
+/* Card text (see src/lib/ui/rich-text.ts) */
+.rf-rich img {
+  display: block;
+  max-width: 100%;
+  max-height: 60vh;
+  margin: 0.5rem auto;
+  border-radius: 0.5rem;
+}
+.rf-rich mark {
+  background: color-mix(in oklab, var(--color-bar) 25%, transparent);
+  color: inherit;
+  border-radius: 0.25rem;
+  padding: 0 0.15em;
+  font-weight: 600;
+}
+.rf-rich ul {
+  list-style: disc;
+  padding-left: 1.25rem;
+  text-align: left;
+}
+.rf-rich code {
+  font-size: 0.9em;
+  padding: 0 0.2em;
+  border-radius: 0.2rem;
+  background: var(--color-muted, rgba(127, 127, 127, 0.15));
+}

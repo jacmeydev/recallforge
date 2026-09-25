@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { api } from '@/lib/api/client';
 import { CardSource, ExplainButton } from './card-source';
+import { isCloze } from '@/lib/core/cloze';
 import { checkCardQuality } from '@/lib/core/quality';
 import type { Card as StudyCard } from '@/lib/core/types';
 
@@ -60,7 +61,12 @@ export function DraftsView({ deck, documentId }: { deck?: string; documentId?: s
   }
 
   const draftOf = (card: StudyCard): Draft =>
-    edits[card.id] ?? { front: card.front, back: card.back, explanation: card.explanation, deck: card.deck.name };
+    edits[card.id] ?? {
+      front: card.cloze?.text ?? card.front,
+      back: card.cloze ? card.cloze.extra : card.back,
+      explanation: card.explanation,
+      deck: card.deck.name,
+    };
   const setDraft = (id: string, draft: Draft) => setEdits((current) => ({ ...current, [id]: draft }));
 
   const saveIfEdited = async (card: StudyCard) => {
@@ -114,7 +120,7 @@ export function DraftsView({ deck, documentId }: { deck?: string; documentId?: s
       <div className="space-y-3">
         {cards?.map((card) => {
           const draft = draftOf(card);
-          const issues = checkCardQuality(draft);
+          const issues = isCloze(draft.front) ? [] : checkCardQuality(draft);
           return (
             <div key={card.id} className="space-y-3 rounded-xl border bg-card p-4">
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">

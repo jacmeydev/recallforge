@@ -157,11 +157,55 @@ export function SettingsView({ connection }: { connection: ConnectionInfo }) {
                 {notice && <span className="text-sm text-emerald-700">{notice}</span>}
               </div>
             </form>
+            <OptimizeRow personalised={settings.fsrsWeights.length > 0} />
           </CardContent>
         </Card>
       )}
 
       <DataCard databasePath={connection.databasePath} />
+    </div>
+  );
+}
+
+function OptimizeRow({ personalised }: { personalised: boolean }) {
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  return (
+    <div className="mt-4 space-y-1 border-t pt-4 text-sm">
+      <div className="font-medium">Algoritmo personalizado {personalised ? '· activo' : ''}</div>
+      <p className="text-xs text-muted-foreground">
+        Ajusta FSRS a cómo olvidas tú (el mismo optimizador que usa Anki). Necesita unas 200 revisiones; tu historial de Anki importado
+        también cuenta. Solo se aplica si predice tu memoria mejor que lo actual.
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            setMessage('');
+            try {
+              const result = await api<{ message: string; applied: boolean; before: { logLoss: number }; after: { logLoss: number } }>(
+                '/api/v1/settings/optimize',
+                { method: 'POST', body: {} }
+              );
+              const gain = Math.round(((result.before.logLoss - result.after.logLoss) / result.before.logLoss) * 100);
+              setMessage(result.applied ? `Listo: predice tu memoria un ${gain}% mejor.` : 'Tus parámetros actuales ya son los mejores.');
+            } catch (err) {
+              const text = err instanceof Error ? err.message : 'Error';
+              const need = /at least (\d+) reviews \(you have (\d+)\)/.exec(text);
+              setMessage(need ? `Necesitas al menos ${need[1]} repasos (tienes ${need[2]}). Sigue estudiando o importa tu historial de Anki.` : text);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          {busy ? 'Optimizando…' : 'Optimizar con mi historial'}
+        </Button>
+        {message && <span className="text-xs text-muted-foreground">{message}</span>}
+      </div>
     </div>
   );
 }
@@ -210,7 +254,10 @@ function DataCard({ databasePath }: { databasePath: string }) {
               <a href="/api/v1/export">Copia completa (JSON)</a>
             </Button>
             <Button asChild variant="outline" size="sm">
-              <a href="/api/v1/export?format=tsv">Tarjetas para Anki / Excel (TSV)</a>
+              <a href="/api/v1/export?format=apkg">Mazo de Anki (.apkg, para el móvil)</a>
+            </Button>
+            <Button asChild variant="outline" size="sm">
+              <a href="/api/v1/export?format=tsv">Hoja de cálculo (TSV)</a>
             </Button>
           </div>
           <p className="text-xs text-muted-foreground">
@@ -221,12 +268,13 @@ function DataCard({ databasePath }: { databasePath: string }) {
         <form className="space-y-2" onSubmit={(e) => void importFile(e)}>
           <div className="font-medium">Importar</div>
           <p className="text-xs text-muted-foreground">
-            Una copia JSON de RecallForge (se fusiona sin duplicar) o un CSV/TSV con pregunta y respuesta (exportación “Notas en texto
-            plano” de Anki, hojas de cálculo).
+            Un mazo de Anki (.apkg: AnKing, mazos compartidos o tu colección, con cloze, imágenes, programación e historial), una copia
+            JSON de RecallForge (se fusiona sin duplicar) o un CSV/TSV con pregunta y respuesta Para mazos de más de 30 MB, pídeselo a tu agente
+            («importa ~/Descargas/AnKing.apkg») o usa <code>recallforge import</code>.
           </p>
           <div className="flex flex-wrap items-center gap-2">
-            <input name="file" type="file" accept=".json,.csv,.tsv,.txt" className="max-w-full text-xs" />
-            <Input name="deck" placeholder="Materia para CSV/TSV (opcional)" className="h-8 max-w-xs text-xs" />
+            <input name="file" type="file" accept=".apkg,.colpkg,.json,.csv,.tsv,.txt" className="max-w-full text-xs" />
+            <Input name="deck" placeholder="Materia donde ponerlo (opcional)" className="h-8 max-w-xs text-xs" />
             <label className="flex items-center gap-1 text-xs">
               <input type="checkbox" name="draft" value="true" /> como borradores
             </label>

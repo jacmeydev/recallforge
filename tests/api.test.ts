@@ -229,6 +229,7 @@ describe('MCP endpoint', () => {
     expect(tools).toEqual([
       'add_cards',
       'add_document',
+      'add_image',
       'approve_cards',
       'card_history',
       'correct_grade',
@@ -236,6 +237,7 @@ describe('MCP endpoint', () => {
       'delete_deck',
       'delete_document',
       'explain_card',
+      'export_data',
       'get_next_card',
       'get_progress_map',
       'get_stats',
@@ -243,14 +245,22 @@ describe('MCP endpoint', () => {
       'import_data',
       'list_decks',
       'list_documents',
+      'optimize_scheduler',
       'read_document',
       'reveal_answer',
       'revert_revision',
       'search_cards',
+      'show_progress',
+      'study',
       'undo_last_review',
       'update_card',
       'update_deck',
       'update_settings',
+      'widget_correct',
+      'widget_grade',
+      'widget_next',
+      'widget_reveal',
+      'widget_undo',
     ]);
     const prompts = (await rpc('prompts/list')).body.result.prompts.map((p: { name: string }) => p.name).sort();
     expect(prompts).toEqual(['make_cards', 'study']);

@@ -1,10 +1,13 @@
 # RecallForge
 
-**Tu memoria de estudio, manejada por tu agente de IA.**
+**Anki con un tutor dentro: estudia con tarjetas en el chat de tu agente de IA.**
 
-RecallForge guarda tus tarjetas de estudio y decide cuándo repasar cada una usando **FSRS**, el algoritmo de repetición espaciada más preciso que existe (el mismo de Anki). La diferencia es que no está pensado para que tú hagas clic en botones: está pensado para que **un agente de IA te pregunte, te corrija y registre cuánto recuerdas**.
+Le dices a tu agente (Claude, ChatGPT, Codex, Cursor, VS Code…) «vamos a repasar» y aparecen **tus tarjetas dentro del chat**: respondes, ves la respuesta y calificas con un clic o con el teclado, tan rápido como en Anki. Cuando algo no te queda claro, pulsas **«Explícame»** y el tutor te lo explica con tu propio material. Por debajo, **FSRS** (el algoritmo de Anki, ajustado a tu historial) decide qué toca repasar cada día.
 
-Es una herramienta local, como los servidores MCP modernos. **No hay cuentas, contraseñas ni Docker**: tu agente (Claude, Cursor, VS Code, Codex, OpenClaw…) lo arranca solo y tus datos se quedan en tu ordenador. Incluye una web local para revisar tarjetas y ver tu progreso.
+- **Trae tus mazos de Anki** (.apkg, incluidos mazos compartidos como AnKing): con cloze, imágenes, etiquetas, tu progreso y tu historial.
+- **Tu agente crea las tarjetas** desde tus PDF, diapositivas o apuntes, como borradores que revisas, citando la página exacta.
+- **Llévalas al móvil**: exporta a `.apkg` y ábrelas en AnkiDroid o AnkiMobile.
+- **Local y privado**: sin cuentas ni Docker; tus datos en un archivo de tu ordenador.
 
 > Proyecto Vibecoding.
 
@@ -16,6 +19,9 @@ Es una herramienta local, como los servidores MCP modernos. **No hay cuentas, co
 - [Así se ve una sesión](#así-se-ve-una-sesión)
 - [Instalación](#instalación)
 - [Conectar tu agente](#conectar-tu-agente)
+- [Estudiar dentro del chat](#estudiar-dentro-del-chat)
+- [Trae tus mazos de Anki](#trae-tus-mazos-de-anki)
+- [Cloze e imágenes](#cloze-e-imágenes)
 - [De tus documentos a tarjetas](#de-tus-documentos-a-tarjetas)
 - [Organización por materias](#organización-por-materias)
 - [Mapa de progreso](#mapa-de-progreso)
@@ -47,6 +53,15 @@ RecallForge pone lo que el agente no tiene: una **memoria persistente**, un **pr
 
 ## Así se ve una sesión
 
+En Claude, ChatGPT o VS Code, «vamos a repasar Farmacología» abre esto dentro de la conversación:
+
+<p align="center">
+  <img src="docs/img/widget-study.png" alt="Tarjeta cloze en el chat con los botones Otra vez, Difícil, Bien y Fácil, y los botones Explícame y Mejorar tarjeta" width="560">
+  <img src="docs/img/widget-practice-dark.png" alt="Pregunta de opción múltiple en modo oscuro, en un móvil" width="240">
+</p>
+
+Con agentes de solo texto (Codex en terminal, voz) la sesión es una conversación:
+
 ```
 Tú:      Pregúntame lo pendiente de Farmacología.
 
@@ -69,15 +84,18 @@ Detrás, el agente llamó a `get_next_card`, `reveal_answer` y `grade_card`. Rec
 
 También puedes pedirle:
 
+- «Importa mi mazo de Anki ~/Descargas/Farmacologia.apkg.»
 - «Hazme tarjetas de este PDF» (o de este capítulo, estas diapositivas, estos apuntes).
 - «¿Cómo voy? Enséñame mi mapa de progreso.»
 - «Tengo examen de Microbiología el 20 de octubre: prepárame.»
 - «Esa la califiqué mal, deshazla.»
 - «Esa tarjeta está mal redactada, corrígela.»
+- «Pásame todo a un .apkg para estudiar en el móvil.»
+- «Ajusta el algoritmo a mi historial.»
 
 ## Instalación
 
-Requisitos: [Node.js](https://nodejs.org) 20 o superior.
+Requisitos: [Node.js](https://nodejs.org) 22 o superior (20 funciona, salvo los `.apkg` del formato comprimido más reciente de Anki).
 
 ```bash
 git clone https://github.com/jacmeydev/recallforge.git
@@ -116,6 +134,38 @@ Al conectarse, el agente recibe automáticamente el **protocolo de estudio** (c�
 **Agentes sin MCP** (OpenClaw, n8n, scripts): usan la [API REST](#api-rest) con la web local abierta. La skill [`skills/recallforge/SKILL.md`](skills/recallforge/SKILL.md) les enseña el protocolo y las llamadas; funciona con cualquier agente compatible con `SKILL.md`.
 
 **Agentes en la nube** (Claude.ai, ChatGPT): necesitan llegar a tu ordenador por HTTPS. Ver [Acceso remoto](DEPLOYMENT.md): define un token (`RECALLFORGE_TOKEN`) y exponlo con un túnel.
+
+## Estudiar dentro del chat
+
+RecallForge es una **MCP App**: en los clientes que las muestran (Claude, ChatGPT, VS Code, Goose…) la herramienta `study` abre una tarjeta interactiva dentro del chat.
+
+- **Rápido como Anki**: `Enter` muestra la respuesta, `1`–`4` califica, `Z` deshace. Imágenes, cloze y fuente con el fragmento exacto.
+- **El tutor a un clic**: *Explícame* (el agente te lo explica con tu material), *Mejorar tarjeta* (propone cómo reescribirla), *Que el tutor corrija mi respuesta* (evalúa por significado lo que escribiste) y *Mi respuesta era correcta*.
+- **El agente sabe lo que pasa**: el widget le cuenta en segundo plano cuántas llevas y cuáles fallaste, así que al terminar puede resumirte qué repasar sin que se lo expliques.
+- **Todos los modos**: repaso, sesión rápida, examen, escribir, opción múltiple y verdadero/falso. `show_progress` muestra tu mapa de progreso en el chat, con botones para empezar a estudiar.
+
+En clientes sin MCP Apps el agente hace la misma sesión conversando.
+
+## Trae tus mazos de Anki
+
+```bash
+node dist/cli.mjs import ~/Descargas/AnKing.apkg --deck Medicina
+```
+
+o pídeselo al agente («importa ~/Descargas/Farmacologia.apkg»), o súbelo en *Agentes y ajustes*. Funciona con todos los formatos de paquete de Anki (incluido el actual, comprimido) y trae:
+
+- notas básicas, **cloze** e **imágenes**; las tarjetas de *oclusión de imagen* se importan como «¿qué estructura está oculta?» con la imagen;
+- subdecks y etiquetas (por ejemplo, las de AnKing);
+- tarjetas suspendidas, tu **progreso** (el estado de memoria FSRS de Anki cuando existe) y tu **historial de repasos**.
+
+Importar el mismo mazo otra vez solo añade lo nuevo. Y al revés: `node dist/cli.mjs export mazo.apkg` (o el botón *Mazo de Anki* en la web, o `export_data` en el agente) genera un paquete que abren Anki, **AnkiDroid y AnkiMobile**, con cloze, imágenes y programación, para repasar en el móvil.
+
+**Algoritmo personalizado.** Con tu historial (unos 200 repasos, o el que traigas de Anki), `node dist/cli.mjs optimize`, el botón *Optimizar con mi historial* o la herramienta `optimize_scheduler` ajustan FSRS a cómo olvidas tú, con el mismo optimizador que usa Anki. Solo se aplica si predice tu memoria mejor que lo actual.
+
+## Cloze e imágenes
+
+- **Cloze** (completar huecos), con la misma sintaxis de Anki: `La {{c1::protamina}} revierte la {{c2::heparina::anticoagulante}}` crea dos tarjetas, «La […] revierte la heparina» y «La protamina revierte la [anticoagulante]». Las tarjetas de una misma nota no salen el mismo día, para que una no delate a la otra. Al editar el texto se actualizan todas.
+- **Imágenes** (anatomía, histología, radiología, ECG): se guardan dentro de la base de datos y se insertan con `![descripción](media:ID)`. En la web hay un botón *Añadir imagen*; el agente usa `add_image`. Los agentes que ven imágenes las reciben junto con la tarjeta.
 
 ## De tus documentos a tarjetas
 
@@ -211,6 +261,8 @@ La IA propone; tú decides.
 
 | Herramienta | Qué hace |
 |---|---|
+| `study` | Abre la sesión de estudio interactiva dentro del chat (MCP Apps). |
+| `show_progress` | Muestra el mapa de progreso en el chat, con botones para empezar. |
 | `get_next_card` | Da la siguiente pregunta, **sin la respuesta**. Filtros: materia, etiqueta, `mode` (`normal`, `quick`, `exam`) y `format` (`recall`, `typing`, `multiple_choice`, `true_false`). |
 | `reveal_answer` | Da la respuesta, la explicación, la fuente con su fragmento, tus intentos anteriores y cuándo volvería la tarjeta con cada calificación. |
 | `grade_card` | Registra cómo recordaste (`again`, `hard`, `good`, `easy`) o la opción elegida en práctica; avisa si es una sanguijuela y devuelve la siguiente pregunta. |
@@ -225,7 +277,10 @@ La IA propone; tú decides.
 | `search_cards` | Busca por texto, materia, etiqueta, documento o estado (`new`, `due`, `leech`, `draft`…). |
 | `update_card`, `delete_cards` | Corrige (con motivo), reetiqueta, mueve, suspende o borra tarjetas. |
 | `card_history`, `revert_revision` | Historial de cambios de una tarjeta y restaurar una versión anterior. |
-| `import_data` | Restaura una copia JSON o importa tarjetas CSV/TSV (exportación de Anki en texto plano). |
+| `import_data` | Importa mazos de Anki (.apkg/.colpkg), copias JSON o CSV/TSV, desde una ruta de tu ordenador o como texto. |
+| `export_data` | Escribe un `.apkg` (Anki, AnkiDroid, AnkiMobile), la copia JSON completa o un TSV. |
+| `add_image` | Guarda una imagen y devuelve el texto para ponerla en una tarjeta. |
+| `optimize_scheduler` | Ajusta FSRS a tu historial de repasos. |
 | `list_decks`, `update_deck`, `delete_deck` | Árbol de materias; renombrar, mover, poner fecha de examen o borrar. |
 | `update_settings` | Nuevas por día, repasos por día, retención objetivo, zona horaria. |
 
@@ -273,8 +328,10 @@ Disponible mientras la web local está abierta (`http://127.0.0.1:3030`). En loc
 | GET, PATCH, DELETE | `/api/v1/documents/{id}` | Índice con cobertura / renombrar / borrar (`?deleteCards=true`) |
 | GET | `/api/v1/documents/{id}/read?fromPart=&maxChars=` | Texto de las partes siguientes |
 | GET, PATCH | `/api/v1/settings` | Ajustes de estudio |
-| GET | `/api/v1/export?format=json\|tsv&deck=` | Exportar todo (JSON) o las tarjetas en TSV |
-| POST | `/api/v1/import` | Importar JSON de RecallForge o CSV/TSV (`multipart` con `file`, `deck?`, `draft?`, o el texto tal cual) |
+| GET | `/api/v1/export?format=json\|apkg\|tsv&deck=` | Exportar todo (JSON), un mazo de Anki o las tarjetas en TSV |
+| POST | `/api/v1/import` | Importar `.apkg`, JSON de RecallForge o CSV/TSV (`multipart` con `file`, `deck?`, `draft?`, o el texto tal cual) |
+| POST, GET | `/api/v1/media`, `/api/v1/media/{id}` | Subir una imagen (`multipart` con `file`) / descargarla |
+| POST | `/api/v1/settings/optimize` | Ajustar FSRS a tu historial (`{ apply? }`) |
 
 ```bash
 URL=http://127.0.0.1:3030
@@ -327,16 +384,18 @@ Variables opcionales:
 ```bash
 npm run dev         # web local en modo desarrollo (127.0.0.1:3030)
 npm run build:cli   # recompila dist/cli.mjs (MCP por stdio)
-npm test            # vitest: núcleo, documentos, progreso, migración, API REST y MCP
+npm run build:widget  # recompila el widget del chat (src/widget → src/lib/mcp/widget.generated.ts)
+npm test            # vitest: núcleo, cloze, imágenes, Anki (paquetes reales), optimizador, documentos, API, MCP y MCP Apps
 npm run typecheck
 npm run lint
 npm run build
 ```
 
 ```
-src/cli.ts        comando recallforge (MCP por stdio, web, stats, export)
-src/lib/core/     dominio: esquema, FSRS, materias, tarjetas, documentos, estudio, progreso
-src/lib/mcp/      servidor MCP: herramientas y protocolo de estudio
+src/cli.ts        comando recallforge (MCP por stdio, web, stats, import, export, backup, optimize)
+src/lib/core/     dominio: esquema, FSRS, materias, tarjetas, cloze, imágenes, Anki, documentos, estudio, progreso
+src/lib/mcp/      servidor MCP: herramientas, MCP App (widget) y protocolo de estudio
+src/widget/       widget de estudio que se muestra dentro del chat (npm run build:widget)
 src/lib/api/      acceso (token opcional) y utilidades para las rutas
 src/app/api/v1/   API REST
 src/app/api/mcp/  MCP por HTTP (para agentes remotos)
@@ -352,13 +411,13 @@ Tecnologías: Node.js, TypeScript, SQLite (better-sqlite3), ts-fsrs, MCP TypeScr
 | Requisito | Cómo |
 |---|---|
 | Velocidad y estabilidad | SQLite local con índices; siguiente tarjeta + calificación en milisegundos incluso con 20 000 tarjetas (hay una prueba automática que lo mide). |
-| Crear tarjetas con poco esfuerzo | PDF, Word, PowerPoint, texto, HTML → partes → el agente crea **borradores editables**. Imágenes, escaneos y vídeos, a través de tu agente. |
+| Crear tarjetas con poco esfuerzo | PDF, Word, PowerPoint, texto, HTML → partes → el agente crea **borradores editables**, básicos o cloze, con imágenes. Mazos de Anki en un comando. Escaneos y vídeos, a través de tu agente. |
 | Control del usuario | Corregir la nota, deshacer, editar con historial y restaurar, elegir materia, etiqueta, modo y formato. |
-| Algoritmo confiable y configurable | FSRS con retención objetivo, límites diarios y pasos ajustables; previsión de 7 días en repasos y minutos. |
+| Algoritmo confiable y configurable | FSRS con retención objetivo, límites diarios y pasos ajustables, **optimizado con tu propio historial**; previsión de 7 días en repasos y minutos. |
 | Modos | Repaso, sesión rápida, examen, escribir, opción múltiple y verdadero/falso. |
 | Contexto y fuentes | Documento, página/diapositiva/sección y fragmento exacto en cada tarjeta, verificado contra el texto. |
-| Propiedad de los datos | Un archivo local, sin cuentas; exportación JSON completa y TSV, importación JSON/CSV/TSV, `backup`; funciona sin internet. |
-| Interfaz limpia | Sin anuncios, ventanas emergentes ni gamificación obligatoria; la misma web en móvil y escritorio. |
+| Propiedad de los datos | Un archivo local, sin cuentas; exportación `.apkg`, JSON completa y TSV; importación `.apkg`, JSON, CSV y TSV; `backup`; funciona sin internet. |
+| Interfaz limpia | Sin anuncios, ventanas emergentes ni gamificación obligatoria; la misma interfaz en el chat, en la web, en móvil y en escritorio (modo claro y oscuro). |
 | Progreso comprensible | Dominio por tema, tarjetas débiles, tiempo estimado, preparación del examen y «qué hacer ahora». |
 | IA supervisada | Propone borradores y cambios con motivo; nunca aprueba sola; la nota se explica y se puede corregir. |
 | Duplicados y contradicciones | Se detectan antes de guardar, con prueba sin guardar (`dry_run`). |
@@ -367,13 +426,12 @@ Tecnologías: Node.js, TypeScript, SQLite (better-sqlite3), ts-fsrs, MCP TypeScr
 | «Explícame esto» | Botón en cada tarjeta (web) y `explain_card` (agente). |
 | Examen separado del repaso espaciado | Cola propia sin límites diarios; la práctica de opción múltiple y V/F no toca la programación. |
 
-**Limitaciones conocidas**: RecallForge no incluye una IA propia, así que la calificación semántica, las explicaciones a fondo, la reformulación y la lectura de imágenes o vídeos las hace tu agente; en la web sin agente te autoevalúas tú. Aún no hay imágenes dentro de las tarjetas ni importación de `.apkg`.
+**Limitaciones conocidas**: RecallForge no incluye una IA propia, así que la calificación semántica, las explicaciones a fondo, la reformulación y la lectura de escaneos o vídeos las hace tu agente; en la web sin agente te autoevalúas tú. La oclusión de imagen de Anki se importa como pregunta sobre la imagen, sin dibujar las máscaras. En el móvil se estudia a través del `.apkg` (AnkiDroid/AnkiMobile) o del chat de tu agente si lo conectas por [acceso remoto](DEPLOYMENT.md); no hay sincronización automática.
 
 ## Hoja de ruta
 
-- Importar mazos de Anki en formato `.apkg` (el texto plano ya se importa).
-- Imágenes en las tarjetas (anatomía, histología, radiología) y extracción de imágenes de los PDF.
-- Optimizar FSRS con tu propio historial (los repasos ya se guardan para ello).
+- Oclusión de imagen nativa (dibujar máscaras sobre la imagen) y extracción de imágenes de los PDF y diapositivas.
+- Sincronización con Anki en ambos sentidos (AnkiConnect) para repasar en el móvil sin exportar a mano.
+- Publicación en npm para instalar con `npx recallforge`.
 - OCR para PDF escaneados.
-- Tarjetas cloze nativas.
 - Recordatorios: un agente programado que consulte `get_stats` cada mañana y te avise.

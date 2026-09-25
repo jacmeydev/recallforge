@@ -12,6 +12,7 @@ import { api, formatDue } from '@/lib/api/client';
 import type { CardRevision } from '@/lib/core/cards';
 import type { Card as StudyCard, DeckSummary } from '@/lib/core/types';
 import { CardSource } from './card-source';
+import { RichText } from './rich-text';
 
 const PAGE = 50;
 const STATE_LABEL: Record<string, string> = { new: 'nueva', learning: 'aprendiendo', relearning: 'reaprendiendo', review: 'repaso' };
@@ -27,7 +28,13 @@ interface CardDraft {
 const EMPTY_DRAFT: CardDraft = { front: '', back: '', explanation: '', source: '', tags: '' };
 
 function toDraft(card: StudyCard): CardDraft {
-  return { front: card.front, back: card.back, explanation: card.explanation, source: card.source, tags: card.tags.join(', ') };
+  return {
+    front: card.cloze?.text ?? card.front,
+    back: card.cloze ? card.cloze.extra : card.back,
+    explanation: card.explanation,
+    source: card.source,
+    tags: card.tags.join(', '),
+  };
 }
 
 function draftBody(draft: CardDraft) {
@@ -280,9 +287,12 @@ export function DeckView({ deckId, initialState = '' }: { deckId: string; initia
               </div>
             ) : (
               <div key={card.id} className={`grid gap-2 p-4 md:grid-cols-[1fr_1fr_auto] ${card.suspended ? 'opacity-50' : ''}`}>
-                <p className="whitespace-pre-wrap text-sm font-medium">{card.front}</p>
+                <div className="text-sm font-medium">
+                  <RichText text={card.revealed ?? card.front} />
+                  {card.cloze && <span className="text-xs font-normal text-muted-foreground">cloze c{card.cloze.ord}</span>}
+                </div>
                 <div className="text-sm">
-                  <p className="whitespace-pre-wrap">{card.back}</p>
+                  <RichText text={card.cloze ? card.cloze.extra : card.back} />
                   {card.explanation && <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{card.explanation}</p>}
                   <div className="mt-1">
                     <CardSource card={card} />
@@ -373,13 +383,57 @@ function CardHistory({ cardId, onReverted }: { cardId: string; onReverted: () =>
   );
 }
 
+function ImageButton({ onInsert }: { onInsert: (markdown: string) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  return (
+    <label className="inline-flex cursor-pointer items-center gap-2 text-xs text-muted-foreground hover:text-foreground">
+      <input
+        type="file"
+        accept="image/*"
+        className="sr-only"
+        onChange={async (event) => {
+          const file = event.target.files?.[0];
+          event.target.value = '';
+          if (!file) return;
+          setBusy(true);
+          setError('');
+          try {
+            const form = new FormData();
+            form.set('file', file);
+            const res = await fetch('/api/v1/media', { method: 'POST', body: form, headers: { 'x-recallforge-client': 'web' } });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data?.error?.message ?? 'Error');
+            onInsert(data.media.markdown);
+          } catch (err) {
+            setError(err instanceof Error ? err.message : 'Error');
+          } finally {
+            setBusy(false);
+          }
+        }}
+      />
+      {busy ? 'Subiendo…' : '＋ Añadir imagen'}
+      {error && <span className="text-destructive">{error}</span>}
+    </label>
+  );
+}
+
 function CardFields({ draft, onChange }: { draft: CardDraft; onChange: (draft: CardDraft) => void }) {
   const set = (key: keyof CardDraft) => (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
     onChange({ ...draft, [key]: event.target.value });
   return (
     <>
-      <Textarea required value={draft.front} onChange={set('front')} placeholder="Pregunta" rows={3} />
-      <Textarea required value={draft.back} onChange={set('back')} placeholder="Respuesta" rows={3} />
+      <div className="space-y-1">
+        <Textarea
+          required
+          value={draft.front}
+          onChange={set('front')}
+          placeholder="Pregunta, o texto con huecos: La {{c1::protamina}} revierte la {{c2::heparina}}"
+          rows={3}
+        />
+        <ImageButton onInsert={(markdown) => onChange({ ...draft, front: `${draft.front}${draft.front ? '\n' : ''}${markdown}` })} />
+      </div>
+      <Textarea value={draft.back} onChange={set('back')} placeholder="Respuesta (en tarjetas con huecos: notas extra, opcional)" rows={3} />
       <Textarea value={draft.explanation} onChange={set('explanation')} placeholder="Explicación / contexto (opcional)" rows={2} />
       <div className="space-y-3">
         <Input value={draft.source} onChange={set('source')} placeholder="Fuente (libro, capítulo, página)" />
