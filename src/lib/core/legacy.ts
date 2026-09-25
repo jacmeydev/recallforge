@@ -9,7 +9,7 @@
 // ============================================================================
 
 import type Database from 'better-sqlite3';
-import { getApiKeyPreview, hashApiKey } from '@/lib/server/api-keys';
+import { htmlToText } from './text';
 
 type DB = Database.Database;
 
@@ -68,7 +68,7 @@ export interface LegacyConversionReport {
 }
 
 export function convertLegacyData(db: DB): LegacyConversionReport {
-  hashPlaintextApiKeys(db);
+  clearPlaintextApiKeys(db);
   const report: LegacyConversionReport = { decks: 0, cards: 0, skippedCards: 0, reviewLogs: 0 };
   const now = new Date().toISOString();
 
@@ -251,13 +251,9 @@ interface LegacyCardRow {
   templates: string | null;
 }
 
-function hashPlaintextApiKeys(db: DB): void {
-  if (!columnNames(db, 'users').has('api_key')) return;
-  const rows = db
-    .prepare(`SELECT id, api_key FROM users WHERE api_key IS NOT NULL AND api_key_hash IS NULL`)
-    .all() as Array<{ id: string; api_key: string }>;
-  const update = db.prepare(`UPDATE users SET api_key_hash = ?, api_key_preview = ?, api_key = NULL WHERE id = ?`);
-  for (const row of rows) update.run(hashApiKey(row.api_key), getApiKeyPreview(row.api_key), row.id);
+/** v1 could store agent API keys in plain text; there are no API keys any more, so drop them. */
+function clearPlaintextApiKeys(db: DB): void {
+  if (columnNames(db, 'users').has('api_key')) db.exec(`UPDATE users SET api_key = NULL`);
 }
 
 function parseJson<T>(raw: string | null | undefined, fallback: T): T {
@@ -267,22 +263,6 @@ function parseJson<T>(raw: string | null | undefined, fallback: T): T {
   } catch {
     return fallback;
   }
-}
-
-export function htmlToText(html: string): string {
-  return html
-    .replace(/<\s*br\s*\/?>/gi, '\n')
-    .replace(/<\/(div|p|li|h[1-6]|tr)>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&amp;/g, '&')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
 }
 
 function renderTemplate(template: string, fields: Record<string, string>): string {

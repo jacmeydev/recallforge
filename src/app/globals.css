@@ -19,6 +19,15 @@
   --color-input: oklch(0.922 0 0);
   --color-ring: oklch(0.4 0.12 265);
 
+  /* Sequential magnitude (mastery bars, study heatmap): one blue hue, validated ordinal steps. */
+  --color-seq-0: oklch(0.94 0 0);
+  --color-seq-1: #86b6ef;
+  --color-seq-2: #5598e7;
+  --color-seq-3: #2a78d6;
+  --color-seq-4: #104281;
+  --color-bar: #2a78d6;
+  --color-bar-track: oklch(0.94 0 0);
+
   --radius-lg: 0.625rem;
   --radius-md: 0.5rem;
   --radius-sm: 0.375rem;
@@ -43,6 +52,13 @@
     --color-border: oklch(0.28 0 0);
     --color-input: oklch(0.28 0 0);
     --color-ring: oklch(0.65 0.15 265);
+    --color-seq-0: #2a2a28;
+    --color-seq-1: #184f95;
+    --color-seq-2: #2a78d6;
+    --color-seq-3: #6da7ec;
+    --color-seq-4: #b7d3f6;
+    --color-bar: #3987e5;
+    --color-bar-track: #2a2a28;
   }
 }
 
@@ -57,4 +73,31 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
+}
+
+/* Card text (see src/lib/ui/rich-text.ts) */
+.rf-rich img {
+  display: block;
+  max-width: 100%;
+  max-height: 60vh;
+  margin: 0.5rem auto;
+  border-radius: 0.5rem;
+}
+.rf-rich mark {
+  background: color-mix(in oklab, var(--color-bar) 25%, transparent);
+  color: inherit;
+  border-radius: 0.25rem;
+  padding: 0 0.15em;
+  font-weight: 600;
+}
+.rf-rich ul {
+  list-style: disc;
+  padding-left: 1.25rem;
+  text-align: left;
+}
+.rf-rich code {
+  font-size: 0.9em;
+  padding: 0 0.2em;
+  border-radius: 0.2rem;
+  background: var(--color-muted, rgba(127, 127, 127, 0.15));
 }

@@ -6,7 +6,7 @@ import { getSettings, updateSettings } from '@/lib/core/settings';
 import { getStats } from '@/lib/core/stats';
 import { gradeCard, nextCard, resetCard, revealCard } from '@/lib/core/study';
 import { studyDay } from '@/lib/core/time';
-import { findUserByApiKey, rotateApiKey, verifyCredentials } from '@/lib/core/users';
+import { getLocalUser } from '@/lib/core/users';
 import { createTestUser, DAY, MINUTE, useFreshDatabase } from './helpers';
 
 const T0 = new Date('2026-03-02T15:00:00.000Z');
@@ -218,7 +218,7 @@ describe('stats', () => {
   });
 });
 
-describe('settings, time and accounts', () => {
+describe('settings, time and the local learner', () => {
   it('validates settings patches', async () => {
     const { user } = await createTestUser();
     expect(updateSettings(user.id, { desiredRetention: 0.85, timezone: 'America/Bogota' })).toMatchObject({
@@ -242,13 +242,9 @@ describe('settings, time and accounts', () => {
     expect(madrid.end.getTime() - madrid.start.getTime()).toBe(23 * 3_600_000);
   });
 
-  it('authenticates by password and rotatable API key', async () => {
-    const { user, apiKey } = await createTestUser();
-    expect(findUserByApiKey(apiKey)?.id).toBe(user.id);
-    expect(await verifyCredentials(user.email.toUpperCase(), 'correct-horse-battery')).toMatchObject({ id: user.id });
-    expect(await verifyCredentials(user.email, 'wrong-password')).toBeNull();
-    const rotated = rotateApiKey(user.id);
-    expect(findUserByApiKey(apiKey)).toBeNull();
-    expect(findUserByApiKey(rotated.apiKey)?.id).toBe(user.id);
+  it('uses one local learner, created on first use', () => {
+    const first = getLocalUser();
+    expect(first).toMatchObject({ id: 'local', name: 'Local' });
+    expect(getLocalUser().id).toBe(first.id);
   });
 });

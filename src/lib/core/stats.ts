@@ -7,7 +7,7 @@
 
 import { getDb } from './db';
 import { tagFilterSql, toCard } from './cards';
-import { resolveDeck } from './decks';
+import { deckScopeSql } from './decks';
 import { badRequest } from './errors';
 import { getSettings } from './settings';
 import { nextCard, StudyFilterSchema } from './study';
@@ -27,13 +27,30 @@ export interface Stats {
     /** Share of today's answers not rated "again". */
     accuracy: number | null;
     minutes: number;
+    /** Multiple-choice / true-false answers today (practice, outside the schedule). */
+    practice: number;
   };
   due: QueueCounts;
-  cards: { total: number; new: number; learning: number; review: number; mature: number; suspended: number };
+  /** Predictable load: time per card from your own history and the minutes due. */
+  workload: {
+    secondsPerCard: number;
+    /** Minutes to clear what is due today (within the daily limits). */
+    minutesToday: number;
+  };
+  cards: {
+    total: number;
+    new: number;
+    learning: number;
+    review: number;
+    mature: number;
+    suspended: number;
+    /** AI-generated cards waiting for the learner's approval. */
+    drafts: number;
+  };
   /** Pass rate on review-state cards over the last 30 days (true retention). */
   retention30d: { reviews: number; rate: number | null };
   streakDays: number;
-  forecast: Array<{ date: string; due: number }>;
+  forecast: Array<{ date: string; due: number; minutes: number }>;
   weakCards: Array<{
     id: string;
     deck: string;
@@ -54,11 +71,12 @@ export function getStats(userId: string, filterInput: unknown = {}, now = new Da
   const db = getDb();
   const today = studyDay(now, settings.timezone, settings.dayStartHour);
 
-  const where = ['c.user_id = @userId'];
+  const where = ['c.user_id = @userId', `c.status = 'active'`];
   const params: Record<string, unknown> = { userId, now: now.toISOString() };
   if (filter.deck) {
-    where.push('c.deck_id = @deckId');
-    params.deckId = resolveDeck(userId, filter.deck).id;
+    const scope = deckScopeSql(userId, filter.deck);
+    where.push(scope.sql);
+    Object.assign(params, scope.params);
   }
   if (filter.tag) {
     where.push(tagFilterSql('@tag'));
@@ -76,7 +94,7 @@ export function getStats(userId: string, filterInput: unknown = {}, now = new Da
               COALESCE(SUM(r.rating = 'good'), 0) AS good,
               COALESCE(SUM(r.rating = 'easy'), 0) AS easy,
               COALESCE(SUM(r.duration_ms), 0) AS duration
-       ${logJoin} AND r.reviewed_at >= @start`
+       ${logJoin} AND r.reviewed_at >= @start AND r.mode != 'practice'`
     )
     .get({ ...params, start: today.start.toISOString() }) as {
     reviews: number;
@@ -100,12 +118,21 @@ export function getStats(userId: string, filterInput: unknown = {}, now = new Da
     )
     .get(params) as { total: number; new_cards: number; learning: number; review: number; mature: number; suspended: number };
 
+  const { drafts } = db
+    .prepare(`SELECT COUNT(*) AS drafts FROM cards c WHERE ${cardWhere.replace(`c.status = 'active'`, `c.status = 'draft'`)}`)
+    .get(params) as { drafts: number };
+
   const retentionRow = db
     .prepare(
       `SELECT COUNT(*) AS reviews, COALESCE(SUM(r.rating != 'again'), 0) AS passed
-       ${logJoin} AND r.state = 'review' AND r.reviewed_at >= @since`
+       ${logJoin} AND r.state = 'review' AND r.mode != 'practice' AND r.reviewed_at >= @since`
     )
     .get({ ...params, since: new Date(now.getTime() - 30 * 86_400_000).toISOString() }) as { reviews: number; passed: number };
+
+  const { practice } = db
+    .prepare(`SELECT COUNT(*) AS practice ${logJoin} AND r.reviewed_at >= @start AND r.mode = 'practice'`)
+    .get({ ...params, start: today.start.toISOString() }) as { practice: number };
+  const secondsPerCard = averageSecondsPerCard(userId, now);
 
   // Streak: consecutive study days with at least one review (all decks).
   const modifier = studyDaySqlModifier(now, settings.timezone, settings.dayStartHour);
@@ -141,7 +168,8 @@ export function getStats(userId: string, filterInput: unknown = {}, now = new Da
   const forecastByDay = new Map(forecastRows.map((row) => [row.day, row.due]));
   const forecast = Array.from({ length: 7 }, (_, offset) => {
     const date = studyDay(now, settings.timezone, settings.dayStartHour, offset).date;
-    return { date, due: forecastByDay.get(date) ?? 0 };
+    const due = forecastByDay.get(date) ?? 0;
+    return { date, due, minutes: Math.ceil((due * secondsPerCard) / 60) };
   });
 
   // Weak cards: forgotten after being learned (lapses) or repeatedly failed ("again").
@@ -157,6 +185,8 @@ export function getStats(userId: string, filterInput: unknown = {}, now = new Da
     )
     .all(params) as Array<CardRow & { again_count: number }>;
 
+  const due = nextCard(userId, { deck: filter.deck, tag: filter.tag }, now).remaining;
+
   return {
     scope: { deck: filter.deck ?? null, tag: filter.tag ?? null },
     today: {
@@ -169,8 +199,13 @@ export function getStats(userId: string, filterInput: unknown = {}, now = new Da
       easy: todayRow.easy,
       accuracy: todayRow.reviews > 0 ? round((todayRow.reviews - todayRow.again) / todayRow.reviews) : null,
       minutes: Math.round(todayRow.duration / 60_000),
+      practice,
     },
-    due: nextCard(userId, filter, now).remaining,
+    due,
+    workload: {
+      secondsPerCard,
+      minutesToday: Math.ceil(((due.learning + due.review + due.new) * secondsPerCard) / 60),
+    },
     cards: {
       total: cardsRow.total,
       new: cardsRow.new_cards,
@@ -178,6 +213,7 @@ export function getStats(userId: string, filterInput: unknown = {}, now = new Da
       review: cardsRow.review,
       mature: cardsRow.mature,
       suspended: cardsRow.suspended,
+      drafts,
     },
     retention30d: {
       reviews: retentionRow.reviews,
@@ -204,6 +240,26 @@ export function getStats(userId: string, filterInput: unknown = {}, now = new Da
       timezone: settings.timezone,
     },
   };
+}
+
+/** Used until there is enough timed history of your own. */
+export const DEFAULT_SECONDS_PER_CARD = 12;
+
+/**
+ * Median seconds per answer over the last 30 days (reviews with a recorded
+ * duration, capped at 5 min so an abandoned card does not skew it).
+ */
+export function averageSecondsPerCard(userId: string, now = new Date()): number {
+  const rows = getDb()
+    .prepare(
+      `SELECT MIN(duration_ms, 300000) AS ms FROM review_logs
+       WHERE user_id = ? AND duration_ms > 0 AND mode != 'practice' AND reviewed_at >= ?
+       ORDER BY reviewed_at DESC LIMIT 500`
+    )
+    .all(userId, new Date(now.getTime() - 30 * 86_400_000).toISOString()) as Array<{ ms: number }>;
+  if (rows.length < 10) return DEFAULT_SECONDS_PER_CARD;
+  const sorted = rows.map((row) => row.ms).sort((a, b) => a - b);
+  return Math.max(1, Math.round(sorted[Math.floor(sorted.length / 2)] / 1000));
 }
 
 function round(value: number): number {

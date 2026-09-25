@@ -4,7 +4,7 @@
 
 export type CardState = 'new' | 'learning' | 'review' | 'relearning';
 export type Rating = 'again' | 'hard' | 'good' | 'easy';
-export type ReviewSource = 'agent' | 'web' | 'api' | 'legacy';
+export type ReviewSource = 'agent' | 'web' | 'api' | 'legacy' | 'anki';
 
 export const RATINGS: readonly Rating[] = ['again', 'hard', 'good', 'easy'];
 
@@ -41,37 +41,68 @@ export interface Deck {
   id: string;
   name: string;
   description: string;
+  /** Exam day (YYYY-MM-DD) for this subject and its subdecks, if any. */
+  examDate: string | null;
   createdAt: string;
   updatedAt: string;
 }
 
-export interface DeckSummary extends Deck {
-  counts: {
-    total: number;
-    new: number;
-    learning: number;
-    review: number;
-    suspended: number;
-    /** Learning cards due within the learn-ahead window + review cards due before the study day ends. */
-    due: number;
-  };
+export interface DeckCounts {
+  total: number;
+  new: number;
+  learning: number;
+  review: number;
+  suspended: number;
+  /** AI-generated cards waiting for the learner's approval (not studied yet). */
+  drafts: number;
+  /** Learning cards due within the learn-ahead window + review cards due before the study day ends. */
+  due: number;
 }
+
+export interface DeckSummary extends Deck {
+  /** Last path segment: "Antibióticos" for "Medicina::Farmacología::Antibióticos". */
+  shortName: string;
+  parentId: string | null;
+  depth: number;
+  /** Cards directly in this deck. */
+  counts: DeckCounts;
+  /** Cards in this deck and all its subdecks. */
+  totals: DeckCounts;
+}
+
+export type CardStatus = 'active' | 'draft';
+/** basic: front/back. cloze: a text with {{c1::…}} deletions, one card per deletion. */
+export type CardKind = 'basic' | 'cloze';
 
 /** What the learner may see before answering. Never contains the answer. */
 export interface QuestionCard {
   id: string;
   deck: { id: string; name: string };
+  kind: CardKind;
+  /** The question. For cloze cards, the text with this card's deletion shown as […] (or its hint). */
   front: string;
   tags: string[];
   state: CardState;
   reps: number;
   lapses: number;
+  /**
+   * The learner has seen this card several times: ask the same fact with
+   * different wording or from another angle so it is recalled, not recognised.
+   */
+  suggestRephrase: boolean;
 }
 
 export interface Card extends QuestionCard {
+  /** The answer. For cloze cards, the deleted text of this card. */
   back: string;
+  /** Cloze cards: the full text with the answer marked ==like this== (for display). */
+  revealed?: string;
+  /** Cloze cards: the editable source ({{c1::…}}) and extra notes shared by the note's cards. */
+  cloze?: { text: string; extra: string; ord: number; noteId: string | null };
   explanation: string;
   source: string;
+  /** Exact passage of the source the card comes from. */
+  excerpt: string;
   dueAt: string;
   stability: number;
   difficulty: number;
@@ -79,6 +110,10 @@ export interface Card extends QuestionCard {
   retrievability: number | null;
   lastReviewAt: string | null;
   suspended: boolean;
+  /** "draft" cards wait for the learner's approval and are never studied. */
+  status: CardStatus;
+  /** Source document and part (page, slide or section) the card was made from. */
+  document: { id: string; title: string; part: number | null; label: string | null } | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -99,6 +134,11 @@ export interface CardRow {
   back: string;
   explanation: string;
   source: string;
+  excerpt: string;
+  kind?: CardKind;
+  cloze_ord?: number | null;
+  note_id?: string | null;
+  external_id?: string | null;
   tags: string;
   state: CardState;
   due_at: string;
@@ -111,6 +151,11 @@ export interface CardRow {
   learning_steps: number;
   last_review_at: string | null;
   suspended: number;
+  status: CardStatus;
+  document_id: string | null;
+  document_part: number | null;
+  document_title?: string | null;
+  document_label?: string | null;
   created_at: string;
   updated_at: string;
 }

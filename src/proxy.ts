@@ -1,115 +1,84 @@
 // ============================================================================
-// RecallForge — Proxy (Defense-in-depth)
+// RecallForge — Proxy
 // ============================================================================
-// 1. Security headers on all responses
-// 2. Rate limiting on auth and API routes
-// 3. Fast-reject for unauthenticated agent API requests
+// 1. Security headers on every response.
+// 2. Optional access token (RECALLFORGE_TOKEN) for servers exposed beyond
+//    localhost. Opening any page with ?key=<token> stores it in a cookie.
+// 3. Rate limiting on the agent API.
 // ============================================================================
 
 import { NextRequest, NextResponse } from 'next/server';
+import { isAuthorized, requiredToken, TOKEN_COOKIE, tokensMatch } from '@/lib/api/auth';
 import { checkRateLimit } from '@/lib/server/rate-limit';
 
-// Session cookie names used by Auth.js v5
-const SESSION_COOKIES = [
-  'authjs.session-token',
-  '__Secure-authjs.session-token',
-  'next-auth.session-token',
-  '__Secure-next-auth.session-token',
-];
-
-// Rate limit configs
-const AUTH_RATE_LIMIT = {
-  max: parseInt(process.env.RATE_LIMIT_AUTH_MAX || '20', 10),
-  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10),
-};
 const API_RATE_LIMIT = {
   max: parseInt(process.env.RATE_LIMIT_API_MAX || '120', 10),
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10),
 };
 
-function getClientIP(req: NextRequest): string {
-  return (
-    req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-    req.headers.get('x-real-ip') ||
-    'unknown'
-  );
-}
-
-function addSecurityHeaders(response: NextResponse): NextResponse {
+function withSecurityHeaders(response: NextResponse): NextResponse {
   response.headers.set('X-Content-Type-Options', 'nosniff');
   response.headers.set('X-Frame-Options', 'DENY');
-  response.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  response.headers.set('Referrer-Policy', 'no-referrer');
   response.headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
-  if (process.env.NODE_ENV === 'production') {
-    response.headers.set(
-      'Strict-Transport-Security',
-      'max-age=31536000; includeSubDomains'
-    );
-  }
   return response;
 }
 
+function clientIp(req: NextRequest): string {
+  return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || req.headers.get('x-real-ip') || 'local';
+}
+
+const LOCKED_PAGE = `<!doctype html><html lang="es"><meta charset="utf-8"><title>RecallForge</title>
+<body style="font-family:system-ui;max-width:32rem;margin:15vh auto;padding:0 1rem;line-height:1.5">
+<h1>RecallForge</h1><p>Este servidor está protegido con un token. Ábrelo una vez con <code>?key=TU_TOKEN</code> al final de la dirección
+(el valor de <code>RECALLFORGE_TOKEN</code>) y el navegador lo recordará.</p></body></html>`;
+
 export function proxy(req: NextRequest) {
-  const { pathname } = req.nextUrl;
-  const ip = getClientIP(req);
+  const { pathname, searchParams } = req.nextUrl;
+  const isApi = pathname.startsWith('/api/');
 
-  // ── Rate limit auth endpoints ──────────────────────────────────────
-  if (pathname.startsWith('/api/auth/register') || pathname.startsWith('/api/auth/callback')) {
-    const rl = checkRateLimit(`auth:${ip}`, AUTH_RATE_LIMIT);
-    if (!rl.allowed) {
-      const res = NextResponse.json(
-        { error: 'Too many requests. Please try again later.' },
-        { status: 429 }
-      );
-      res.headers.set('Retry-After', String(Math.ceil(rl.retryAfterMs / 1000)));
-      return addSecurityHeaders(res);
+  // Rate limiting only matters when the server is reachable by others (token mode); media are exempt.
+  if (requiredToken() && isApi && !pathname.startsWith('/api/v1/media/') && (pathname.startsWith('/api/v1/') || pathname === '/api/mcp')) {
+    const limit = checkRateLimit(`api:${clientIp(req)}`, API_RATE_LIMIT);
+    if (!limit.allowed) {
+      const res = NextResponse.json({ error: { code: 'rate_limited', message: 'Too many requests' } }, { status: 429 });
+      res.headers.set('Retry-After', String(Math.ceil(limit.retryAfterMs / 1000)));
+      return withSecurityHeaders(res);
     }
   }
 
-  // ── Rate limit the agent-facing API ────────────────────────────────
-  if (pathname.startsWith('/api/v1/') || pathname === '/api/mcp') {
-    const rl = checkRateLimit(`api:${ip}`, API_RATE_LIMIT);
-    if (!rl.allowed) {
-      const res = NextResponse.json(
-        { error: 'Rate limit exceeded.' },
-        { status: 429 }
+  const token = requiredToken();
+  if (token && pathname !== '/api/health') {
+    if (!isAuthorized(req)) {
+      return withSecurityHeaders(
+        isApi
+          ? NextResponse.json(
+              { error: { code: 'unauthorized', message: 'Send "Authorization: Bearer <RECALLFORGE_TOKEN>"' } },
+              { status: 401, headers: { 'WWW-Authenticate': 'Bearer realm="recallforge"' } }
+            )
+          : new NextResponse(LOCKED_PAGE, { status: 401, headers: { 'content-type': 'text/html; charset=utf-8' } })
       );
-      res.headers.set('Retry-After', String(Math.ceil(rl.retryAfterMs / 1000)));
-      return addSecurityHeaders(res);
     }
-
-    // ── Auth check for protected routes ──────────────────────────────
-    const authHeader = req.headers.get('authorization');
-    if (
-      authHeader?.toLowerCase().startsWith('bearer ') ||
-      req.headers.get('x-api-key') ||
-      req.nextUrl.searchParams.get('key')
-    ) {
-      return addSecurityHeaders(NextResponse.next());
+    // A browser that opened a page with ?key= keeps the token in a cookie and drops it from the URL.
+    const key = searchParams.get('key');
+    if (!isApi && key && tokensMatch(key, token)) {
+      const clean = req.nextUrl.clone();
+      clean.searchParams.delete('key');
+      const res = NextResponse.redirect(clean);
+      res.cookies.set(TOKEN_COOKIE, key, {
+        httpOnly: true,
+        sameSite: 'lax',
+        secure: req.nextUrl.protocol === 'https:',
+        maxAge: 60 * 60 * 24 * 365,
+        path: '/',
+      });
+      return withSecurityHeaders(res);
     }
-
-    const hasSessionCookie = SESSION_COOKIES.some(
-      (name) => req.cookies.get(name)?.value
-    );
-    if (hasSessionCookie) {
-      return addSecurityHeaders(NextResponse.next());
-    }
-
-    // No credentials → 401
-    const res = NextResponse.json(
-      { error: 'Authentication required' },
-      { status: 401 }
-    );
-    return addSecurityHeaders(res);
   }
 
-  // ── All other routes: pass through with security headers ───────────
-  return addSecurityHeaders(NextResponse.next());
+  return withSecurityHeaders(NextResponse.next());
 }
 
 export const config = {
-  matcher: [
-    '/api/:path*',
-    '/((?!_next/static|_next/image|favicon\\.ico).*)',
-  ],
+  matcher: ['/((?!_next/static|_next/image|favicon\\.ico).*)'],
 };

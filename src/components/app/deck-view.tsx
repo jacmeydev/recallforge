@@ -9,7 +9,10 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { api, formatDue } from '@/lib/api/client';
+import type { CardRevision } from '@/lib/core/cards';
 import type { Card as StudyCard, DeckSummary } from '@/lib/core/types';
+import { CardSource } from './card-source';
+import { RichText } from './rich-text';
 
 const PAGE = 50;
 const STATE_LABEL: Record<string, string> = { new: 'nueva', learning: 'aprendiendo', relearning: 'reaprendiendo', review: 'repaso' };
@@ -25,7 +28,13 @@ interface CardDraft {
 const EMPTY_DRAFT: CardDraft = { front: '', back: '', explanation: '', source: '', tags: '' };
 
 function toDraft(card: StudyCard): CardDraft {
-  return { front: card.front, back: card.back, explanation: card.explanation, source: card.source, tags: card.tags.join(', ') };
+  return {
+    front: card.cloze?.text ?? card.front,
+    back: card.cloze ? card.cloze.extra : card.back,
+    explanation: card.explanation,
+    source: card.source,
+    tags: card.tags.join(', '),
+  };
 }
 
 function draftBody(draft: CardDraft) {
@@ -41,13 +50,14 @@ function draftBody(draft: CardDraft) {
   };
 }
 
-export function DeckView({ deckId }: { deckId: string }) {
+export function DeckView({ deckId, initialState = '' }: { deckId: string; initialState?: string }) {
   const router = useRouter();
   const [deck, setDeck] = useState<DeckSummary | null>(null);
   const [cards, setCards] = useState<StudyCard[]>([]);
   const [total, setTotal] = useState(0);
   const [query, setQuery] = useState('');
-  const [state, setState] = useState('');
+  const [state, setState] = useState(initialState);
+  const [history, setHistory] = useState<string | null>(null);
   const [draft, setDraft] = useState<CardDraft>(EMPTY_DRAFT);
   const [editing, setEditing] = useState<{ id: string; draft: CardDraft } | null>(null);
   const [message, setMessage] = useState('');
@@ -147,7 +157,7 @@ export function DeckView({ deckId }: { deckId: string }) {
     });
 
   const renameDeck = () => {
-    const name = prompt('Nuevo nombre del mazo', deck?.name);
+    const name = prompt('Nuevo nombre o ruta (usa :: para moverlo dentro de otra materia)', deck?.name);
     if (!name?.trim()) return;
     void run(async () => {
       await api(`/api/v1/decks/${encodeURIComponent(deckId)}`, { method: 'PATCH', body: { name } });
@@ -156,7 +166,7 @@ export function DeckView({ deckId }: { deckId: string }) {
   };
 
   const removeDeck = () =>
-    confirm(`¿Eliminar el mazo "${deck?.name}" con sus ${deck?.counts.total ?? 0} tarjetas? No se puede deshacer.`) &&
+    confirm(`¿Eliminar "${deck?.name}", sus submaterias y sus ${deck?.totals.total ?? 0} tarjetas? No se puede deshacer.`) &&
     run(async () => {
       await api(`/api/v1/decks/${encodeURIComponent(deckId)}`, { method: 'DELETE' });
       router.push('/');
@@ -172,8 +182,16 @@ export function DeckView({ deckId }: { deckId: string }) {
           <h1 className="text-2xl font-bold">{deck?.name ?? '…'}</h1>
           {deck && (
             <p className="text-sm text-muted-foreground">
-              {deck.counts.total} tarjetas · {deck.counts.new} nuevas · {deck.counts.due} pendientes hoy
-              {deck.counts.suspended > 0 && ` · ${deck.counts.suspended} suspendidas`}
+              {deck.totals.total} tarjetas · {deck.totals.new} nuevas · {deck.totals.due} pendientes hoy
+              {deck.totals.suspended > 0 && ` · ${deck.totals.suspended} suspendidas`}
+              {deck.totals.drafts > 0 && (
+                <>
+                  {' '}·{' '}
+                  <Link href={`/drafts?deck=${encodeURIComponent(deckId)}`} className="text-amber-600 hover:underline">
+                    {deck.totals.drafts} por revisar
+                  </Link>
+                </>
+              )}
             </p>
           )}
         </div>
@@ -189,6 +207,33 @@ export function DeckView({ deckId }: { deckId: string }) {
           </Button>
         </div>
       </div>
+
+      {deck && (
+        <div className="flex flex-wrap items-center gap-2 rounded-xl border bg-card p-3 text-sm">
+          <span className="text-muted-foreground">Fecha de examen</span>
+          <Input
+            type="date"
+            className="h-8 w-44"
+            defaultValue={deck.examDate ?? ''}
+            key={deck.examDate ?? 'none'}
+            onChange={(e) =>
+              void run(async () => {
+                await api(`/api/v1/decks/${encodeURIComponent(deckId)}`, {
+                  method: 'PATCH',
+                  body: { examDate: e.target.value || null },
+                });
+                reload();
+              }, e.target.value ? 'Fecha de examen guardada' : 'Fecha de examen eliminada')
+            }
+          />
+          {deck.examDate && (
+            <Button asChild size="sm" variant="outline">
+              <Link href={`/review?deck=${encodeURIComponent(deckId)}&mode=exam`}>Repasar para el examen</Link>
+            </Button>
+          )}
+          <span className="text-xs text-muted-foreground">Se aplica también a sus submaterias.</span>
+        </div>
+      )}
 
       {error && <p className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
       {message && <p className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800">{message}</p>}
@@ -242,10 +287,17 @@ export function DeckView({ deckId }: { deckId: string }) {
               </div>
             ) : (
               <div key={card.id} className={`grid gap-2 p-4 md:grid-cols-[1fr_1fr_auto] ${card.suspended ? 'opacity-50' : ''}`}>
-                <p className="whitespace-pre-wrap text-sm font-medium">{card.front}</p>
+                <div className="text-sm font-medium">
+                  <RichText text={card.revealed ?? card.front} />
+                  {card.cloze && <span className="text-xs font-normal text-muted-foreground">cloze c{card.cloze.ord}</span>}
+                </div>
                 <div className="text-sm">
-                  <p className="whitespace-pre-wrap">{card.back}</p>
+                  <RichText text={card.cloze ? card.cloze.extra : card.back} />
                   {card.explanation && <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{card.explanation}</p>}
+                  <div className="mt-1">
+                    <CardSource card={card} />
+                  </div>
+                  {history === card.id && <CardHistory cardId={card.id} onReverted={reload} />}
                 </div>
                 <div className="flex flex-col items-start gap-2 md:items-end">
                   <div className="flex flex-wrap gap-1">
@@ -256,6 +308,13 @@ export function DeckView({ deckId }: { deckId: string }) {
                   <div className="flex gap-1 text-xs">
                     <button className="text-muted-foreground hover:text-foreground" onClick={() => setEditing({ id: card.id, draft: toDraft(card) })}>
                       Editar
+                    </button>
+                    ·
+                    <button
+                      className="text-muted-foreground hover:text-foreground"
+                      onClick={() => setHistory(history === card.id ? null : card.id)}
+                    >
+                      Historial
                     </button>
                     ·
                     <button className="text-muted-foreground hover:text-foreground" onClick={() => void toggleSuspend(card)}>
@@ -283,13 +342,98 @@ export function DeckView({ deckId }: { deckId: string }) {
   );
 }
 
+const EDIT_SOURCE: Record<string, string> = { agent: 'agente', web: 'tú (web)', api: 'API', revert: 'restauración' };
+
+function CardHistory({ cardId, onReverted }: { cardId: string; onReverted: () => void }) {
+  const [revisions, setRevisions] = useState<CardRevision[] | null>(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    api<{ revisions: CardRevision[] }>(`/api/v1/cards/${cardId}/revisions`)
+      .then((data) => setRevisions(data.revisions))
+      .catch((err) => setError(err.message));
+  }, [cardId]);
+  if (error) return <p className="mt-2 text-xs text-destructive">{error}</p>;
+  if (!revisions) return <p className="mt-2 text-xs text-muted-foreground">Cargando…</p>;
+  if (revisions.length === 0) return <p className="mt-2 text-xs text-muted-foreground">Sin cambios desde que se creó.</p>;
+  return (
+    <ul className="mt-2 space-y-2 rounded-lg border p-2 text-xs">
+      {revisions.map((revision) => (
+        <li key={revision.id} className="space-y-0.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-muted-foreground">
+            <span>
+              {new Date(revision.changedAt).toLocaleString('es')} · {EDIT_SOURCE[revision.source] ?? revision.source}
+              {revision.reason ? ` · ${revision.reason}` : ''}
+            </span>
+            <button
+              className="underline hover:text-foreground"
+              onClick={() => void api(`/api/v1/revisions/${revision.id}/revert`, { method: 'POST' }).then(onReverted)}
+            >
+              Restaurar lo anterior
+            </button>
+          </div>
+          {revision.changes.map((change) => (
+            <div key={change.field}>
+              <span className="font-medium">{change.field}:</span> <del className="text-muted-foreground">{String(change.before)}</del> →{' '}
+              <ins className="no-underline">{String(change.after)}</ins>
+            </div>
+          ))}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function ImageButton({ onInsert }: { onInsert: (markdown: string) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  return (
+    <label className="inline-flex cursor-pointer items-center gap-2 text-xs text-muted-foreground hover:text-foreground">
+      <input
+        type="file"
+        accept="image/*"
+        className="sr-only"
+        onChange={async (event) => {
+          const file = event.target.files?.[0];
+          event.target.value = '';
+          if (!file) return;
+          setBusy(true);
+          setError('');
+          try {
+            const form = new FormData();
+            form.set('file', file);
+            const res = await fetch('/api/v1/media', { method: 'POST', body: form, headers: { 'x-recallforge-client': 'web' } });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data?.error?.message ?? 'Error');
+            onInsert(data.media.markdown);
+          } catch (err) {
+            setError(err instanceof Error ? err.message : 'Error');
+          } finally {
+            setBusy(false);
+          }
+        }}
+      />
+      {busy ? 'Subiendo…' : '＋ Añadir imagen'}
+      {error && <span className="text-destructive">{error}</span>}
+    </label>
+  );
+}
+
 function CardFields({ draft, onChange }: { draft: CardDraft; onChange: (draft: CardDraft) => void }) {
   const set = (key: keyof CardDraft) => (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
     onChange({ ...draft, [key]: event.target.value });
   return (
     <>
-      <Textarea required value={draft.front} onChange={set('front')} placeholder="Pregunta" rows={3} />
-      <Textarea required value={draft.back} onChange={set('back')} placeholder="Respuesta" rows={3} />
+      <div className="space-y-1">
+        <Textarea
+          required
+          value={draft.front}
+          onChange={set('front')}
+          placeholder="Pregunta, o texto con huecos: La {{c1::protamina}} revierte la {{c2::heparina}}"
+          rows={3}
+        />
+        <ImageButton onInsert={(markdown) => onChange({ ...draft, front: `${draft.front}${draft.front ? '\n' : ''}${markdown}` })} />
+      </div>
+      <Textarea value={draft.back} onChange={set('back')} placeholder="Respuesta (en tarjetas con huecos: notas extra, opcional)" rows={3} />
       <Textarea value={draft.explanation} onChange={set('explanation')} placeholder="Explicación / contexto (opcional)" rows={2} />
       <div className="space-y-3">
         <Input value={draft.source} onChange={set('source')} placeholder="Fuente (libro, capítulo, página)" />

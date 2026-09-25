@@ -7,17 +7,17 @@
 
 import { NextResponse } from 'next/server';
 import { AppError, badRequest } from '@/lib/core/errors';
-import { authenticate, type Authenticated } from './auth';
+import type { AuthUser } from '@/lib/core/types';
+import { authenticate } from './auth';
 
-interface HandlerArgs<P> extends Authenticated {
+interface HandlerArgs<P> {
   req: Request;
   params: P;
+  user: AuthUser;
 }
 
 interface Options {
   status?: number;
-  /** Reject API-key callers (account actions reserved for the browser). */
-  sessionOnly?: boolean;
 }
 
 export function route<P = Record<string, string>>(
@@ -26,13 +26,10 @@ export function route<P = Record<string, string>>(
 ) {
   return async (req: Request, ctx: { params: Promise<P> }) => {
     try {
-      const auth = await authenticate(req);
-      if (!auth) return unauthorized();
-      if (options.sessionOnly && auth.via !== 'session') {
-        throw new AppError(403, 'forbidden', 'This action is only available from the web app');
-      }
+      const user = authenticate(req);
+      if (!user) return unauthorized();
       const params = ((await ctx?.params) ?? {}) as P;
-      const result = await fn({ req, params, ...auth });
+      const result = await fn({ req, params, user });
       if (result instanceof Response) return result;
       return NextResponse.json(result, { status: options.status ?? 200 });
     } catch (error) {
@@ -46,7 +43,7 @@ export function unauthorized(): Response {
     {
       error: {
         code: 'unauthorized',
-        message: 'Missing or invalid API key. Send "Authorization: Bearer rf_..." (get a key in the web app → Cuenta).',
+        message: 'This RecallForge server requires its access token: send "Authorization: Bearer <RECALLFORGE_TOKEN>".',
       },
     },
     { status: 401, headers: { 'WWW-Authenticate': 'Bearer realm="recallforge"' } }

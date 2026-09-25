@@ -12,7 +12,10 @@ export class ApiError extends Error {
 export async function api<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
   const res = await fetch(path, {
     method: init.method ?? 'GET',
-    headers: init.body === undefined ? undefined : { 'content-type': 'application/json' },
+    headers: {
+      'x-recallforge-client': 'web',
+      ...(init.body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
     body: init.body === undefined ? undefined : JSON.stringify(init.body),
     cache: 'no-store',
   });

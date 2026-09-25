@@ -12,7 +12,7 @@ jobs:
 
     strategy:
       matrix:
-        node-version: [20]
+        node-version: [20, 22]
 
     steps:
       - uses: actions/checkout@v4
@@ -34,11 +34,12 @@ jobs:
 
       - name: Run tests
         run: npm test
-        env:
-          AUTH_SECRET: ci-test-secret-at-least-16-chars
 
-      - name: Build
+      - name: Chat widget is up to date
+        run: npm run build:widget && git diff --exit-code src/lib/mcp/widget.generated.ts
+
+      - name: Build (web + CLI)
         run: npm run build
-        env:
-          AUTH_SECRET: ci-build-secret-at-least-16-chars
-          AUTH_TRUST_HOST: 'true'
+
+      - name: CLI smoke test
+        run: node dist/cli.mjs path

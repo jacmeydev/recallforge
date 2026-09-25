@@ -9,10 +9,15 @@ type Params = { id: string };
 /** GET /api/v1/cards/:id — full card, including the answer. */
 export const GET = route<Params>(({ user, params }) => ({ card: getCard(user.id, params.id) }));
 
-/** PATCH /api/v1/cards/:id — { front?, back?, explanation?, source?, tags?, deck?, suspended? } */
-export const PATCH = route<Params>(async ({ req, user, params }) => ({
-  card: updateCard(user.id, params.id, await readJson(req)),
-}));
+/**
+ * PATCH /api/v1/cards/:id — { front?, back?, explanation?, source?, excerpt?, tags?, deck?, suspended?, reason? }
+ * Content changes are recorded as revisions (GET /api/v1/cards/:id/revisions) and can be reverted.
+ */
+export const PATCH = route<Params>(async ({ req, user, params }) => {
+  const { reason, ...patch } = await readJson(req);
+  const source = req.headers.get('x-recallforge-client') === 'web' ? 'web' : 'api';
+  return { card: updateCard(user.id, params.id, patch, source, typeof reason === 'string' ? reason : undefined) };
+});
 
 /** DELETE /api/v1/cards/:id */
 export const DELETE = route<Params>(({ user, params }) => {

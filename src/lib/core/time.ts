@@ -67,6 +67,12 @@ function shiftDate(year: number, month: number, day: number, deltaDays: number) 
   return { year: shifted.getUTCFullYear(), month: shifted.getUTCMonth() + 1, day: shifted.getUTCDate() };
 }
 
+/** UTC instant of `hour`:00 local time on a YYYY-MM-DD date. */
+export function localDateTime(date: string, hour: number, timezone: string): Date {
+  const [year, month, day] = date.split('-').map(Number);
+  return zonedTimeToUtc(year, month, day, hour, timezone);
+}
+
 export interface StudyDay {
   /** Local calendar date of the study day, YYYY-MM-DD. */
   date: string;

@@ -9,13 +9,15 @@ import * as gradeRoute from '@/app/api/v1/study/grade/route';
 import * as statsRoute from '@/app/api/v1/stats/route';
 import * as settingsRoute from '@/app/api/v1/settings/route';
 import * as exportRoute from '@/app/api/v1/export/route';
-import * as apiKeyRoute from '@/app/api/v1/account/api-key/route';
-import * as registerRoute from '@/app/api/auth/register/route';
 import * as mcpRoute from '@/app/api/mcp/route';
-import { createTestUser, useFreshDatabase } from './helpers';
+import * as documentsRoute from '@/app/api/v1/documents/route';
+import * as documentReadRoute from '@/app/api/v1/documents/[id]/read/route';
+import * as approveRoute from '@/app/api/v1/cards/approve/route';
+import { buildPdf, buildPptx } from './fixtures';
+import { useFreshDatabase } from './helpers';
 
 const BASE = 'http://localhost:3030';
-let apiKey: string;
+const TOKEN = 'correct-horse-battery-staple';
 
 type RouteHandler = (req: Request, ctx: { params: Promise<never> }) => Promise<Response>;
 
@@ -25,7 +27,7 @@ function call(
   init: { method?: string; body?: unknown; params?: Record<string, string>; key?: string | null } = {}
 ) {
   const headers: Record<string, string> = { 'content-type': 'application/json' };
-  const key = init.key === undefined ? apiKey : init.key;
+  const key = init.key ?? null;
   if (key) headers.authorization = `Bearer ${key}`;
   const req = new Request(`${BASE}${path}`, {
     method: init.method ?? 'GET',
@@ -39,25 +41,29 @@ async function json(res: Response) {
   return { status: res.status, body: await res.json() };
 }
 
-beforeEach(async () => {
+beforeEach(() => {
   useFreshDatabase();
-  apiKey = (await createTestUser()).apiKey;
+  delete process.env.RECALLFORGE_TOKEN;
 });
 
 describe('REST API v1', () => {
-  it('rejects missing or wrong API keys', async () => {
-    expect((await call(decksRoute.GET, '/api/v1/decks', { key: null })).status).toBe(401);
-    const res = await json(await call(decksRoute.GET, '/api/v1/decks', { key: 'rf_wrong' }));
-    expect(res.status).toBe(401);
-    expect(res.body.error.code).toBe('unauthorized');
+  it('needs no credentials locally', async () => {
+    expect((await call(decksRoute.GET, '/api/v1/decks')).status).toBe(200);
   });
 
-  it('accepts the key via X-API-Key header and ?key= query', async () => {
+  it('requires the token everywhere when RECALLFORGE_TOKEN is set', async () => {
+    process.env.RECALLFORGE_TOKEN = TOKEN;
     const noParams = { params: Promise.resolve({}) };
-    const viaHeader = await decksRoute.GET(new Request(`${BASE}/api/v1/decks`, { headers: { 'x-api-key': apiKey } }), noParams);
+    const res = await json(await call(decksRoute.GET, '/api/v1/decks'));
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('unauthorized');
+    expect((await call(decksRoute.GET, '/api/v1/decks', { key: 'wrong-token-of-same-size-xxx' })).status).toBe(401);
+    expect((await call(decksRoute.GET, '/api/v1/decks', { key: TOKEN })).status).toBe(200);
+    const viaHeader = await decksRoute.GET(new Request(`${BASE}/api/v1/decks`, { headers: { 'x-api-key': TOKEN } }), noParams);
     expect(viaHeader.status).toBe(200);
-    const viaQuery = await decksRoute.GET(new Request(`${BASE}/api/v1/decks?key=${apiKey}`), noParams);
-    expect(viaQuery.status).toBe(200);
+    expect((await decksRoute.GET(new Request(`${BASE}/api/v1/decks?key=${TOKEN}`), noParams)).status).toBe(200);
+    const viaCookie = await decksRoute.GET(new Request(`${BASE}/api/v1/decks`, { headers: { cookie: `a=b; rf_token=${TOKEN}` } }), noParams);
+    expect(viaCookie.status).toBe(200);
   });
 
   it('runs a full study loop: add → next → reveal → grade', async () => {
@@ -124,7 +130,7 @@ describe('REST API v1', () => {
     expect((await call(deckRoute.DELETE, '/api/v1/decks/nope', { method: 'DELETE', params: { id: 'nope' } })).status).toBe(404);
   });
 
-  it('reads and validates settings, exports data, and reserves key rotation for the web app', async () => {
+  it('reads and validates settings and exports data', async () => {
     const updated = await json(await call(settingsRoute.PATCH, '/api/v1/settings', { method: 'PATCH', body: { newCardsPerDay: 50 } }));
     expect(updated.body.settings.newCardsPerDay).toBe(50);
     expect((await call(settingsRoute.PATCH, '/api/v1/settings', { method: 'PATCH', body: { newCardsPerDay: -1 } })).status).toBe(400);
@@ -133,47 +139,54 @@ describe('REST API v1', () => {
     expect(exported.headers.get('content-disposition')).toMatch(/attachment/);
     expect((await exported.json()).format).toBe('recallforge-export');
 
-    expect((await call(apiKeyRoute.POST, '/api/v1/account/api-key', { method: 'POST' })).status).toBe(403);
   });
 
-  it('closes registration after the first account unless ALLOW_REGISTRATION=true', async () => {
-    const register = () =>
-      registerRoute.POST(
-        new Request(`${BASE}/api/auth/register`, {
-          method: 'POST',
-          body: JSON.stringify({ email: `x${Date.now()}@example.com`, password: 'longenough', name: 'X' }),
-        })
-      );
-    expect((await registerRoute.GET().json()).open).toBe(false);
-    expect((await register()).status).toBe(403);
-    process.env.ALLOW_REGISTRATION = 'true';
-    try {
-      expect((await register()).status).toBe(201);
-    } finally {
-      delete process.env.ALLOW_REGISTRATION;
-    }
-  });
-
-  it('registers the first account and returns the API key once', async () => {
-    useFreshDatabase();
-    const res = await json(
-      await registerRoute.POST(
-        new Request(`${BASE}/api/auth/register`, {
-          method: 'POST',
-          body: JSON.stringify({ email: 'Nueva@Example.com', password: 'longenough', name: 'Nueva', timezone: 'America/Lima' }),
-        })
+  it('uploads a file, reads it and approves the drafts made from it', async () => {
+    const form = new FormData();
+    form.append('file', new File([Buffer.from(await buildPptx([{ lines: ['Ciclo de Krebs', 'Ocurre en la mitocondria'] }]))], 'bioquimica.pptx'));
+    form.append('deck', 'Medicina::Bioquímica');
+    const upload = await json(
+      await documentsRoute.POST(
+        new Request(`${BASE}/api/v1/documents`, { method: 'POST', body: form }),
+        { params: Promise.resolve({}) }
       )
     );
-    expect(res.status).toBe(201);
-    expect(res.body.apiKey).toMatch(/^rf_/);
-    expect(res.body.user).toMatchObject({ email: 'nueva@example.com', timezone: 'America/Lima' });
+    expect(upload.status).toBe(201);
+    expect(upload.body.document).toMatchObject({ title: 'bioquimica', parts: 1, deck: { name: 'Medicina::Bioquímica' } });
+    const id = upload.body.document.id;
+
+    const read = await json(await call(documentReadRoute.GET, `/api/v1/documents/${id}/read?fromPart=0`, { params: { id } }));
+    expect(read.body.parts[0]).toMatchObject({ index: 0, label: 'diapositiva 1' });
+
+    const created = await json(
+      await call(cardsRoute.POST, '/api/v1/cards', {
+        method: 'POST',
+        body: { documentId: id, draft: true, cards: [{ front: '¿Dónde ocurre el ciclo de Krebs?', back: 'En la matriz mitocondrial', documentPart: 0 }] },
+      })
+    );
+    expect(created.body.status).toBe('draft');
+    const approved = await json(await call(approveRoute.POST, '/api/v1/cards/approve', { method: 'POST', body: { documentId: id } }));
+    expect(approved.body).toEqual({ approved: 1 });
+
+    const unsupported = await documentsRoute.POST(
+      new Request(`${BASE}/api/v1/documents`, {
+        method: 'POST',
+        body: (() => {
+          const f = new FormData();
+          f.append('file', new File(['x'], 'foto.png'));
+          return f;
+        })(),
+      }),
+      { params: Promise.resolve({}) }
+    );
+    expect(unsupported.status).toBe(400);
   });
 });
 
 describe('MCP endpoint', () => {
   let rpcId = 0;
 
-  async function rpc(method: string, params: Record<string, unknown> = {}, key: string | null = apiKey) {
+  async function rpc(method: string, params: Record<string, unknown> = {}, key: string | null = null) {
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       accept: 'application/json, text/event-stream',
@@ -191,8 +204,12 @@ describe('MCP endpoint', () => {
     return { isError: Boolean(body.result.isError), text, data: body.result.isError ? null : JSON.parse(text) };
   }
 
-  it('requires authentication', async () => {
-    expect((await rpc('tools/list', {}, null)).status).toBe(401);
+  it('requires the token only when RECALLFORGE_TOKEN is set', async () => {
+    expect((await rpc('tools/list')).status).toBe(200);
+    process.env.RECALLFORGE_TOKEN = TOKEN;
+    expect((await rpc('tools/list')).status).toBe(401);
+    expect((await rpc('tools/list', {}, TOKEN)).status).toBe(200);
+    delete process.env.RECALLFORGE_TOKEN;
   });
 
   it('initializes with the study protocol as server instructions', async () => {
@@ -211,17 +228,39 @@ describe('MCP endpoint', () => {
     const tools = (await rpc('tools/list')).body.result.tools.map((t: { name: string }) => t.name).sort();
     expect(tools).toEqual([
       'add_cards',
+      'add_document',
+      'add_image',
+      'approve_cards',
+      'card_history',
+      'correct_grade',
       'delete_cards',
       'delete_deck',
+      'delete_document',
+      'explain_card',
+      'export_data',
       'get_next_card',
+      'get_progress_map',
       'get_stats',
       'grade_card',
+      'import_data',
       'list_decks',
+      'list_documents',
+      'optimize_scheduler',
+      'read_document',
       'reveal_answer',
+      'revert_revision',
       'search_cards',
+      'show_progress',
+      'study',
+      'undo_last_review',
       'update_card',
       'update_deck',
       'update_settings',
+      'widget_correct',
+      'widget_grade',
+      'widget_next',
+      'widget_reveal',
+      'widget_undo',
     ]);
     const prompts = (await rpc('prompts/list')).body.result.prompts.map((p: { name: string }) => p.name).sort();
     expect(prompts).toEqual(['make_cards', 'study']);
@@ -264,6 +303,41 @@ describe('MCP endpoint', () => {
 
     const settings = await tool('update_settings', { new_cards_per_day: 5 });
     expect(settings.data.settings.newCardsPerDay).toBe(5);
+  });
+
+  it('lets an agent store a document and turn it into reviewed drafts', async () => {
+    const stored = await tool('add_document', {
+      title: 'Clase de cardio',
+      deck: 'Medicina::Cardiología',
+      content_base64: Buffer.from(buildPdf(['El nodo sinusal marca el ritmo', 'La onda P es auricular'])).toString('base64'),
+      filename: 'cardio.pdf',
+    });
+    expect(stored.data.document).toMatchObject({ parts: 2, deck: { name: 'Medicina::Cardiología' } });
+    const documentId = stored.data.document.id;
+
+    const read = await tool('read_document', { document_id: documentId, max_chars: 500 });
+    expect(read.data.parts.map((p: { label: string }) => p.label)).toEqual(['p. 1', 'p. 2']);
+
+    const added = await tool('add_cards', {
+      document_id: documentId,
+      draft: true,
+      cards: [{ front: '¿Qué estructura marca el ritmo cardíaco normal?', back: 'El nodo sinusal', document_part: 0 }],
+    });
+    expect(added.data).toMatchObject({ status: 'draft', created: [{ deck: 'Medicina::Cardiología' }] });
+
+    const outline = await tool('read_document', { document_id: documentId, outline_only: true });
+    expect(outline.data.document.outline.map((p: { cards: number }) => p.cards)).toEqual([1, 0]);
+
+    const drafts = await tool('search_cards', { state: 'draft', document_id: documentId });
+    expect(drafts.data.cards[0].source).toBe('Clase de cardio, p. 1');
+
+    expect((await tool('get_next_card')).data.card).toBeNull();
+    expect((await tool('approve_cards', { card_ids: [drafts.data.cards[0].id] })).data).toEqual({ approved: 1 });
+    expect((await tool('get_next_card', { deck: 'Medicina' })).data.card.front).toBe('¿Qué estructura marca el ritmo cardíaco normal?');
+
+    const text = await tool('add_document', { title: 'Notas', text: '# Uno\nA\n# Dos\nB' });
+    expect(text.data.document.parts).toBe(2);
+    expect((await tool('list_documents')).data.documents).toHaveLength(2);
   });
 
   it('returns tool errors instead of crashing', async () => {
