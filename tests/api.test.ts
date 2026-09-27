@@ -253,6 +253,7 @@ describe('MCP endpoint', () => {
       'search_cards',
       'show_progress',
       'study',
+      'sync_anki',
       'undo_last_review',
       'update_card',
       'update_deck',

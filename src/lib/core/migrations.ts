@@ -236,6 +236,24 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    // Link between RecallForge cards and notes/cards in the learner's Anki (AnkiConnect sync).
+    id: '2026_09_anki_links',
+    up(db) {
+      db.exec(`
+        CREATE TABLE anki_links (
+          card_id TEXT PRIMARY KEY REFERENCES cards(id) ON DELETE CASCADE,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          anki_note_id INTEGER NOT NULL,
+          anki_card_id INTEGER,
+          content_hash TEXT NOT NULL,
+          last_review_id INTEGER NOT NULL DEFAULT 0,
+          synced_at TEXT NOT NULL
+        );
+        CREATE INDEX ix_anki_links_note ON anki_links(anki_note_id);
+      `);
+    },
+  },
 ];
 
 export function runMigrations(db: DB): string[] {

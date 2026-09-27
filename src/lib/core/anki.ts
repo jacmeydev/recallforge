@@ -386,6 +386,12 @@ async function importCollection(
       0, @scheduledDays, @reps, @lapses, 0, @lastReviewAt, @suspended, @status, @kind, @clozeOrd, @noteId, @externalId, @occlusion,
       @createdAt, @createdAt)`);
   const idByAnkiCard = new Map<number, { id: string; state: CardState }>();
+  // Remember which Anki note/card each imported card is, so syncing with Anki later
+  // links them instead of creating duplicates (and pulls their reviews).
+  const linkAnki = db.prepare(
+    `INSERT OR IGNORE INTO anki_links (card_id, user_id, anki_note_id, anki_card_id, content_hash, last_review_id, synced_at)
+     VALUES (?, ?, ?, ?, '', ?, ?)`
+  );
   let occlusions = 0;
   let empty = 0;
 
@@ -518,6 +524,7 @@ async function importCollection(
         createdAt: new Date(now.getTime() - (cards.length - position)).toISOString(),
       });
       idByAnkiCard.set(card.id, { id, state });
+      linkAnki.run(id, userId, note.id, card.id, lastMs ?? 0, now.toISOString());
       result.cards++;
     });
 
@@ -572,7 +579,7 @@ const BASIC_MODEL_ID = 1_714_000_000_001;
 const OCCLUSION_MODEL_ID = 1_714_000_000_003;
 
 /** Anki's stock "Image Occlusion" note type (Anki 23.10+), so exported cards render natively. */
-function occlusionModel(deckId: number) {
+export function occlusionModel(deckId: number) {
   return {
     id: String(OCCLUSION_MODEL_ID),
     name: 'Image Occlusion',
@@ -623,7 +630,7 @@ const CSS = `.card { font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
 .extra, .source { font-size: 15px; color: #666; margin-top: 12px; }
 img { max-width: 100%; }`;
 
-function model(id: number, name: string, cloze: boolean, deckId: number) {
+export function model(id: number, name: string, cloze: boolean, deckId: number) {
   const fields = cloze ? ['Text', 'Back Extra', 'Explanation', 'Source'] : ['Front', 'Back', 'Explanation', 'Source'];
   const tail = `{{#Explanation}}<div class="extra">{{Explanation}}</div>{{/Explanation}}{{#Source}}<div class="source">{{Source}}</div>{{/Source}}`;
   return {
@@ -651,7 +658,7 @@ function model(id: number, name: string, cloze: boolean, deckId: number) {
 }
 
 /** RecallForge text → Anki field HTML (images become <img src> of the exported files). */
-function toAnkiHtml(text: string, mediaName: (id: string) => string): string {
+export function toAnkiHtml(text: string, mediaName: (id: string) => string): string {
   const escape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   return escape(text)
     .replace(MEDIA_REF, (_, alt: string, id: string) => `<img src="${mediaName(id)}" alt="${alt.replace(/"/g, '&quot;')}">`)
