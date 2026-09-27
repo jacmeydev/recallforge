@@ -171,7 +171,21 @@ export function splitText(text: string, markdown = false): DocumentPartInput[] {
   return limitPartSize(parts);
 }
 
+/** pdf.js decodes images with ArrayBuffer.transferToFixedLength (Node 21+); copy on older Node. */
+function polyfillArrayBufferTransfer(): void {
+  const proto = ArrayBuffer.prototype as unknown as Record<string, unknown>;
+  if (typeof proto.transferToFixedLength === 'function') return;
+  const copy = function (this: ArrayBuffer, length = this.byteLength): ArrayBuffer {
+    const out = new ArrayBuffer(length);
+    new Uint8Array(out).set(new Uint8Array(this, 0, Math.min(length, this.byteLength)));
+    return out;
+  };
+  Object.defineProperty(ArrayBuffer.prototype, 'transferToFixedLength', { value: copy, configurable: true, writable: true });
+  if (typeof proto.transfer !== 'function') Object.defineProperty(ArrayBuffer.prototype, 'transfer', { value: copy, configurable: true, writable: true });
+}
+
 async function extractPdf(data: Uint8Array): Promise<DocumentPartInput[]> {
+  polyfillArrayBufferTransfer();
   const { extractImages, extractText, getDocumentProxy } = await import('unpdf');
   let pages: string[];
   let pdf: Awaited<ReturnType<typeof getDocumentProxy>>;
