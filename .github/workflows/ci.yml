@@ -35,11 +35,25 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Run tests with Node's built-in SQLite (used by the Claude Desktop extension)
+        if: matrix.node-version == 22
+        run: npm test
+        env:
+          RECALLFORGE_SQLITE: node
+
       - name: Chat widget is up to date
         run: npm run build:widget && git diff --exit-code src/lib/mcp/widget.generated.ts
 
       - name: Build (web + CLI)
         run: npm run build
+
+      - name: Claude Desktop extension and npm package start and answer
+        if: matrix.node-version == 22
+        run: |
+          npm run build:mcpb
+          mkdir -p /tmp/ext && cd /tmp/ext && unzip -q "$GITHUB_WORKSPACE/dist/recallforge.mcpb"
+          RECALLFORGE_DIR=/tmp/ext-data node --no-warnings server/index.mjs import "$GITHUB_WORKSPACE/tests/data/anki-modern.apkg"
+          RECALLFORGE_DIR=/tmp/ext-data node --no-warnings server/index.mjs stats
 
       - name: CLI smoke test
         run: node dist/cli.mjs path

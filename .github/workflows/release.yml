@@ -1,0 +1,41 @@
+name: "Release"
+
+# Push a tag like v3.0.0 to publish:
+#   - a GitHub Release with recallforge.mcpb (one-click install in Claude Desktop)
+#   - the npm package "recallforge" (npx recallforge mcp), when the NPM_TOKEN secret is set
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run build:mcpb
+
+      - name: GitHub Release with the Claude Desktop extension
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/recallforge.mcpb \
+            --title "RecallForge $GITHUB_REF_NAME" \
+            --notes "Descarga **recallforge.mcpb** y ábrelo con Claude Desktop (Ajustes → Extensiones) para instalar RecallForge con un clic. Otros agentes: \`npx -y recallforge mcp\`. Novedades en el README."
+
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        if: env.NODE_AUTH_TOKEN != ''
+        run: npm publish ./build/npm --access public

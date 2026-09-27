@@ -5,10 +5,10 @@
 // recorded in schema_migrations.
 // ============================================================================
 
-import type Database from 'better-sqlite3';
+import type { SqliteDatabase } from './sqlite';
 import { archiveLegacyTables, convertLegacyData, hasLegacySchema } from './legacy';
 
-type DB = Database.Database;
+type DB = SqliteDatabase;
 
 interface Migration {
   id: string;
@@ -210,6 +210,48 @@ const MIGRATIONS: Migration[] = [
     id: '2026_09_queue_order_index',
     up(db) {
       db.exec(`CREATE INDEX ix_cards_new_order ON cards(user_id, suspended, state, created_at)`);
+    },
+  },
+  {
+    // Image occlusion cards: the image, its regions and which region each card hides (JSON).
+    id: '2026_09_image_occlusion',
+    up(db) {
+      db.exec(`ALTER TABLE cards ADD COLUMN occlusion TEXT`);
+    },
+  },
+  {
+    // Figures found in documents (PDF pages, slides, Word sections), stored as media.
+    id: '2026_09_document_images',
+    up(db) {
+      db.exec(`
+        CREATE TABLE document_images (
+          document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+          part INTEGER NOT NULL,
+          position INTEGER NOT NULL,
+          media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+          width INTEGER,
+          height INTEGER,
+          PRIMARY KEY (document_id, part, position)
+        );
+      `);
+    },
+  },
+  {
+    // Link between RecallForge cards and notes/cards in the learner's Anki (AnkiConnect sync).
+    id: '2026_09_anki_links',
+    up(db) {
+      db.exec(`
+        CREATE TABLE anki_links (
+          card_id TEXT PRIMARY KEY REFERENCES cards(id) ON DELETE CASCADE,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          anki_note_id INTEGER NOT NULL,
+          anki_card_id INTEGER,
+          content_hash TEXT NOT NULL,
+          last_review_id INTEGER NOT NULL DEFAULT 0,
+          synced_at TEXT NOT NULL
+        );
+        CREATE INDEX ix_anki_links_note ON anki_links(anki_note_id);
+      `);
     },
   },
 ];

@@ -238,6 +238,7 @@ describe('MCP endpoint', () => {
       'delete_document',
       'explain_card',
       'export_data',
+      'get_image',
       'get_next_card',
       'get_progress_map',
       'get_stats',
@@ -252,6 +253,7 @@ describe('MCP endpoint', () => {
       'search_cards',
       'show_progress',
       'study',
+      'sync_anki',
       'undo_last_review',
       'update_card',
       'update_deck',
@@ -263,7 +265,7 @@ describe('MCP endpoint', () => {
       'widget_undo',
     ]);
     const prompts = (await rpc('prompts/list')).body.result.prompts.map((p: { name: string }) => p.name).sort();
-    expect(prompts).toEqual(['make_cards', 'study']);
+    expect(prompts).toEqual(['make_cards', 'plan_today', 'study']);
   });
 
   it('lets an agent create cards and run a study session end to end', async () => {

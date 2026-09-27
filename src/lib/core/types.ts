@@ -71,8 +71,34 @@ export interface DeckSummary extends Deck {
 }
 
 export type CardStatus = 'active' | 'draft';
-/** basic: front/back. cloze: a text with {{c1::…}} deletions, one card per deletion. */
-export type CardKind = 'basic' | 'cloze';
+/**
+ * basic: front/back. cloze: a text with {{c1::…}} deletions, one card per deletion.
+ * occlusion: an image with regions to hide, one card per region (or group of regions).
+ */
+export type CardKind = 'basic' | 'cloze' | 'occlusion';
+
+/** A region of an image, in coordinates relative to the image (0–1). */
+export interface OcclusionShape {
+  /** Which card hides it (regions with the same number are hidden together). 0 = a visible label. */
+  ord: number;
+  shape: 'rect' | 'ellipse' | 'polygon' | 'text';
+  left?: number;
+  top?: number;
+  width?: number;
+  height?: number;
+  /** polygon: [[x, y], …] */
+  points?: Array<[number, number]>;
+  /** The structure's name (the answer), or the text of a label. */
+  label?: string;
+}
+
+export interface Occlusion {
+  /** Media id of the image. */
+  image: string;
+  shapes: OcclusionShape[];
+  /** true: every region is covered and one is asked ("hide all, guess one"); false: only the asked one is covered. */
+  hideAll: boolean;
+}
 
 /** What the learner may see before answering. Never contains the answer. */
 export interface QuestionCard {
@@ -81,6 +107,8 @@ export interface QuestionCard {
   kind: CardKind;
   /** The question. For cloze cards, the text with this card's deletion shown as […] (or its hint). */
   front: string;
+  /** Image occlusion cards: the image, its regions and the one asked (labels of asked regions are removed). */
+  occlusion?: Occlusion & { ord: number };
   tags: string[];
   state: CardState;
   reps: number;
@@ -138,6 +166,7 @@ export interface CardRow {
   kind?: CardKind;
   cloze_ord?: number | null;
   note_id?: string | null;
+  occlusion?: string | null;
   external_id?: string | null;
   tags: string;
   state: CardState;

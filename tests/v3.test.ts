@@ -6,7 +6,9 @@ import { exportApkg, importApkg, ankiHtmlToText, renderAnkiTemplate } from '@/li
 import { addCards, getCard, searchCards, updateCard } from '@/lib/core/cards';
 import { clozeAnswer, clozeOrdinals, clozeQuestion, clozeRevealed } from '@/lib/core/cloze';
 import { getDb } from '@/lib/core/db';
+import { importDocumentFile, readDocument, getDocument } from '@/lib/core/documents';
 import { saveMedia } from '@/lib/core/media';
+import { imageSize, parseAnkiOcclusion, toAnkiOcclusion } from '@/lib/core/occlusion';
 import { gradeCard, nextCard, revealCard } from '@/lib/core/study';
 import { renderRichText } from '@/lib/ui/rich-text';
 import { createMcpServer } from '@/lib/mcp/server';
@@ -184,6 +186,13 @@ describe('MCP Apps (study widget in the chat)', () => {
     expect((progress.structuredContent as { view: string }).view).toBe('progress');
   });
 
+  it('lets agents create cloze cards without a back', async () => {
+    const { client } = await connect();
+    const res = await client.callTool({ name: 'add_cards', arguments: { deck: 'Cardio', cards: [{ front: 'El {{c1::nodo sinusal}} marca el {{c2::ritmo}}' }] } });
+    expect(res.isError).toBeFalsy();
+    expect(JSON.parse((res.content as Array<{ text: string }>)[0].text).created).toHaveLength(2);
+  });
+
   it('sends card images to agents that can see them', async () => {
     const { client, user } = await connect();
     const media = saveMedia(user.id, { filename: 'ecg.png', data: PNG });
@@ -193,5 +202,140 @@ describe('MCP Apps (study widget in the chat)', () => {
     expect(blocks.map((b) => b.type)).toEqual(['text', 'image']);
     expect(blocks[1].mimeType).toBe('image/png');
     expect(revealCard(user.id, id).card.front).toContain('media:');
+  });
+});
+
+describe('image occlusion', () => {
+  it('reads and writes Anki occlusion fields, including escapes and old pixel coordinates', () => {
+    const field =
+      '{{c1::image-occlusion:rect:left=.1:top=.2:width=.3:height=.1:oi=1}}<br>{{c2::image-occlusion:polygon:points=.6,.1 .9,.1 .75,.4:oi=1}}<br>{{c3::image-occlusion:text:text=C5\\:T1:left=.05:top=.9}}';
+    const parsed = parseAnkiOcclusion(field);
+    expect(parsed.hideAll).toBe(true);
+    expect(parsed.shapes).toEqual([
+      { ord: 1, shape: 'rect', left: 0.1, top: 0.2, width: 0.3, height: 0.1 },
+      { ord: 2, shape: 'polygon', points: [[0.6, 0.1], [0.9, 0.1], [0.75, 0.4]] },
+      { ord: 0, shape: 'text', left: 0.05, top: 0.9, label: 'C5:T1' },
+    ]);
+    expect(parseAnkiOcclusion(toAnkiOcclusion({ ...parsed }))).toEqual(parsed);
+    const pixels = parseAnkiOcclusion('{{c1::image-occlusion:rect:left=30:top=40:width=60:height=20}}', { width: 300, height: 200 });
+    expect(pixels.shapes[0]).toMatchObject({ left: 0.1, top: 0.2, width: 0.2, height: 0.1 });
+    expect(imageSize(PNG)).toEqual({ width: 1, height: 1 });
+  });
+
+  it('creates one card per region (or group), hides the answer in the question and validates the image', async () => {
+    const { user } = await createTestUser();
+    const media = saveMedia(user.id, { filename: 'plexo.png', data: PNG });
+    const res = addCards(user.id, {
+      deck: 'Anatomía',
+      cards: [
+        {
+          front: 'Plexo braquial',
+          occlusion: {
+            image: media.markdown,
+            regions: [
+              { label: 'Nervio axilar', left: 0.1, top: 0.1, width: 0.2, height: 0.1 },
+              { label: 'Nervio radial', left: 0.5, top: 0.5, width: 0.2, height: 0.1, group: 2 },
+              { label: 'Nervio radial', left: 0.5, top: 0.7, width: 0.2, height: 0.1, group: 2 },
+            ],
+          },
+        },
+      ],
+    });
+    expect(res.created).toHaveLength(2);
+    const card = getCard(user.id, res.created[0].id);
+    expect(card).toMatchObject({ kind: 'occlusion', back: 'Nervio axilar', front: 'Plexo braquial\n¿Qué hay bajo la región marcada (1)?' });
+    const question = nextCard(user.id, { deck: 'Anatomía' }).card!;
+    expect(question.occlusion?.shapes.find((s) => s.ord === question.occlusion?.ord)?.label).toBeUndefined();
+    expect(question.occlusion?.shapes.some((s) => s.label === 'Nervio radial')).toBe(true);
+    expect(getCard(user.id, res.created[1].id).back).toBe('Nervio radial');
+    expect(() => addCards(user.id, { deck: 'X', cards: [{ occlusion: { image: 'media:nope', regions: [{ left: 0, top: 0, width: 0.1, height: 0.1 }] } }] })).toThrow(/not found/);
+    expect(() => addCards(user.id, { deck: 'X', cards: [{ occlusion: { image: media.id, regions: [{ left: 0 }] } }] })).toThrow(/needs left, top/);
+  });
+
+  it('imports Anki image occlusion notes and exports them back as Anki image occlusion', async () => {
+    const { user } = await createTestUser();
+    const imported = await importApkg(user.id, path.join(DATA, 'anki-occlusion.apkg'));
+    expect(imported).toMatchObject({ cards: 3, warnings: [] });
+    const { cards } = searchCards(user.id, { limit: 10 });
+    expect(cards.every((c) => c.kind === 'occlusion' && c.occlusion?.hideAll)).toBe(true);
+    expect(cards.map((c) => c.occlusion?.ord).sort()).toEqual([1, 2, 3]);
+    expect(cards[0].occlusion?.shapes.map((s) => s.shape).sort()).toEqual(['ellipse', 'polygon', 'rect', 'rect']);
+    expect(cards[0].explanation).toBe('');
+    expect(cards.find((c) => c.occlusion?.ord === 1)?.back).toBe('Raíces C5-T1');
+
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'rf-io-')), 'io.apkg');
+    fs.writeFileSync(file, await exportApkg(user.id));
+    useFreshDatabase();
+    const { user: other } = await createTestUser();
+    expect((await importApkg(other.id, file)).cards).toBe(3);
+    expect(searchCards(other.id, { limit: 10 }).cards.every((c) => c.kind === 'occlusion')).toBe(true);
+  });
+});
+
+describe('figures in documents', () => {
+  for (const [file, label] of [
+    ['figs.pdf', 'p. 1'],
+    ['figs.pptx', 'diapositiva 1'],
+    ['figs.docx', 'Histologia'],
+  ]) {
+    it(`extracts the figures of ${file} into the right part and skips icons`, async () => {
+      const { user } = await createTestUser();
+      const doc = await importDocumentFile(user.id, { filename: file, data: fs.readFileSync(path.join(DATA, file)) });
+      const { parts } = readDocument(user.id, doc.id);
+      const withFigure = parts.find((p) => p.label === label)!;
+      expect(withFigure.images).toHaveLength(1);
+      expect(withFigure.images![0]).toMatchObject({ width: 400, height: 300 });
+      expect(withFigure.images![0].markdown).toMatch(/^!\[.*\]\(media:[\w-]+\)$/);
+      expect(parts.filter((p) => p.label !== label).every((p) => (p.images ?? []).length === 0)).toBe(true);
+      expect(getDocument(user.id, doc.id).outline.find((p) => p.label === label)?.images).toHaveLength(1);
+
+      // A figure can become an image occlusion card linked to its page.
+      const res = addCards(user.id, {
+        deck: 'Histología',
+        documentId: doc.id,
+        cards: [{ documentPart: withFigure.index, occlusion: { image: withFigure.images![0].markdown, regions: [{ label: 'Núcleo', left: 0.4, top: 0.4, width: 0.2, height: 0.2 }] } }],
+      });
+      expect(getCard(user.id, res.created[0].id)).toMatchObject({ kind: 'occlusion', back: 'Núcleo', document: { id: doc.id, part: withFigure.index } });
+    });
+  }
+
+  it('lets agents look at a figure', async () => {
+    const user = getLocalUser();
+    const server = createMcpServer(user);
+    const client = new Client({ name: 'host', version: '1' });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(a), client.connect(b)]);
+    const doc = await importDocumentFile(user.id, { filename: 'figs.pdf', data: fs.readFileSync(path.join(DATA, 'figs.pdf')) });
+    const figure = readDocument(user.id, doc.id).parts[0].images![0];
+    const res = await client.callTool({ name: 'get_image', arguments: { image: figure.markdown } });
+    const blocks = res.content as Array<{ type: string; text?: string; mimeType?: string }>;
+    expect(JSON.parse(blocks[0].text!)).toMatchObject({ width: 400, height: 300 });
+    expect(blocks[1]).toMatchObject({ type: 'image', mimeType: 'image/png' });
+  });
+});
+
+describe('duplicate detection', () => {
+  it('ignores shared boilerplate, catches singular/plural variants and stays fast', async () => {
+    const { user } = await createTestUser();
+    const subjects = ['anatomía', 'fisiología', 'farmacología', 'microbiología', 'patología', 'bioquímica', 'histología', 'genética'];
+    addCards(user.id, {
+      deck: 'Medicina',
+      cards: subjects.flatMap((subject, i) =>
+        Array.from({ length: 30 }, (_, j) => ({ front: `Pregunta clínica sobre el mecanismo de ${subject} ${String.fromCharCode(97 + j)}${i}`, back: `Respuesta ${i}-${j}` }))
+      ),
+    });
+    addCards(user.id, { deck: 'Medicina', cards: [{ front: 'Antídoto de la intoxicación por heparina', back: 'Protamina' }] });
+    const check = addCards(user.id, {
+      deck: 'Medicina',
+      dryRun: true,
+      cards: [
+        { front: 'Pregunta clínica sobre el mecanismo de embriología', back: 'Otra cosa' },
+        { front: 'Antídotos de las intoxicaciones por heparina', back: 'Sulfato de protamina' },
+        { front: 'Antídoto para una intoxicación por heparina', back: 'Vitamina K' },
+      ],
+    });
+    expect(check.warnings.find((w) => w.index === 0)).toBeUndefined();
+    expect(check.warnings.find((w) => w.index === 1)?.issues.join()).toMatch(/Near-duplicate/);
+    expect(check.warnings.find((w) => w.index === 2)?.issues.join()).toMatch(/contradiction/);
   });
 });

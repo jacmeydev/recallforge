@@ -16,14 +16,26 @@ import { createRequire } from 'module';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { closeDb, getDb, resolveDatabasePath } from '@/lib/core/db';
+import { backupDatabase, closeDb, resolveDatabasePath } from '@/lib/core/db';
 import { exportCardsTsv, exportUserData } from '@/lib/core/export';
 import { exportApkg, importApkg } from '@/lib/core/anki';
+import { syncWithAnki } from '@/lib/core/anki-sync';
 import { importData } from '@/lib/core/import';
 import { optimizeScheduler } from '@/lib/core/optimizer';
 import { getStats } from '@/lib/core/stats';
 import { getLocalUser } from '@/lib/core/users';
 import { createMcpServer } from '@/lib/mcp/server';
+import { installReminder, notify, reminderText, uninstallReminder } from '@/lib/reminder';
+
+// Node flags its built-in SQLite and WASI (used by the scheduler optimizer) as experimental; that
+// notice is noise for learners, so it is not printed. Other warnings still are.
+const emitWarning = process.emitWarning.bind(process);
+process.emitWarning = ((warning: string | Error, ...rest: unknown[]) => {
+  const type = typeof rest[0] === 'string' ? rest[0] : (rest[0] as { type?: string } | undefined)?.type;
+  const name = warning instanceof Error ? warning.name : type;
+  if (name === 'ExperimentalWarning') return;
+  return (emitWarning as (...args: unknown[]) => void)(warning, ...rest);
+}) as typeof process.emitWarning;
 
 const HELP = `RecallForge — memoria de repetición espaciada para tus agentes de IA
 
@@ -35,7 +47,11 @@ Uso:
   recallforge backup [carpeta] Copia de la base de datos (por defecto ~/.recallforge/backups)
   recallforge import <archivo> [--deck Materia] [--draft]
                                Importa un mazo de Anki (.apkg), una copia JSON o tarjetas CSV/TSV
+  recallforge sync-anki [--deck Materia]
+                              Sincroniza con Anki abierto (AnkiConnect): envía tarjetas y trae tus repasos
   recallforge optimize        Ajusta FSRS a tu propio historial de repasos
+  recallforge remind [--install HH:MM | --uninstall]
+                              Aviso en el escritorio con lo pendiente de hoy (y programarlo cada día)
   recallforge path            Muestra dónde están tus datos
 
 Ejemplo (Claude Code):
@@ -64,6 +80,14 @@ function runUi(args: string[]): void {
   const portIndex = args.indexOf('--port');
   const port = portIndex >= 0 ? args[portIndex + 1] : process.env.PORT || '3030';
   const root = packageRoot();
+  const hasWeb = fs.existsSync(path.join(root, '.next', 'BUILD_ID')) || fs.existsSync(path.join(root, 'src', 'app'));
+  if (!hasWeb) {
+    console.error(
+      'La web local no viene en esta instalación. Estudia con tu agente («vamos a repasar»), o instala la versión completa: https://github.com/jacmeydev/recallforge'
+    );
+    process.exitCode = 1;
+    return;
+  }
   const built = fs.existsSync(path.join(root, '.next', 'BUILD_ID'));
   const nextBin = createRequire(path.join(root, 'package.json')).resolve('next/dist/bin/next');
   const nextArgs = built ? ['start', '-H', '127.0.0.1', '-p', port] : ['dev', '--webpack', '-H', '127.0.0.1', '-p', port];
@@ -117,7 +141,7 @@ async function main(): Promise<void> {
       fs.mkdirSync(dir, { recursive: true });
       const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
       const file = path.join(dir, `recallforge-${stamp}.db`);
-      await getDb().backup(file);
+      backupDatabase(file);
       console.error(`Copia guardada en ${file}`);
       return;
     }
@@ -148,13 +172,43 @@ async function main(): Promise<void> {
       for (const warning of result.warnings.slice(0, 10)) console.error(`  · ${warning}`);
       return;
     }
+    case 'sync-anki': {
+      const flag = (name: string) => (args.indexOf(name) >= 0 ? args[args.indexOf(name) + 1] : undefined);
+      const result = await syncWithAnki(getLocalUser().id, { deck: flag('--deck'), url: flag('--url'), key: flag('--key') });
+      console.log(
+        `Anki: ${result.notesAdded} notas nuevas, ${result.notesUpdated} actualizadas, ${result.reviewsPulled} repasos traídos de Anki` +
+          (result.mediaStored ? `, ${result.mediaStored} imágenes` : '')
+      );
+      for (const warning of result.warnings) console.error(`  · ${warning}`);
+      return;
+    }
+    case 'remind': {
+      if (args.includes('--install')) {
+        const at = args[args.indexOf('--install') + 1];
+        console.log(installReminder(path.resolve(process.argv[1]), at && /^\d{1,2}:\d{2}$/.test(at) ? at : undefined));
+        return;
+      }
+      if (args.includes('--uninstall')) {
+        console.log(uninstallReminder());
+        return;
+      }
+      const text = reminderText();
+      if (!text) {
+        console.log('Nada pendiente hoy.');
+        return;
+      }
+      if (!notify('RecallForge', text)) console.log(text);
+      return;
+    }
     case 'optimize': {
       const result = await optimizeScheduler(getLocalUser().id);
       const gain = Math.round(((result.before.logLoss - result.after.logLoss) / result.before.logLoss) * 100);
       console.log(
-        result.applied
+        result.applied && gain >= 1
           ? `Algoritmo ajustado a tu memoria con ${result.reviews} repasos: predice un ${gain}% mejor cuándo vas a olvidar.`
-          : 'Tus parámetros actuales ya predicen tu memoria igual de bien; no se cambió nada.'
+          : result.applied
+            ? `Algoritmo actualizado con ${result.reviews} repasos; ya estaba ajustado a tu memoria.`
+            : 'Tus parámetros actuales ya predicen tu memoria igual de bien; no se cambió nada.'
       );
       return;
     }

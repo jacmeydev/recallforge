@@ -8,11 +8,35 @@
 
 import JSZip from 'jszip';
 import { badRequest } from './errors';
+import { imageSize } from './occlusion';
+import { encodePng } from './png';
 import { htmlToText } from './text';
+
+const isWebImage = (name: string) => /\.(png|jpe?g|gif|webp)$/i.test(name);
+
+export interface ExtractedImage {
+  filename: string;
+  data: Uint8Array;
+  width?: number;
+  height?: number;
+}
 
 export interface DocumentPartInput {
   label: string;
   text: string;
+  /** Figures of this page, slide or section (diagrams, anatomy, micrographs…). */
+  images?: ExtractedImage[];
+}
+
+/** Icons, bullets and logos are not study material. */
+const MIN_IMAGE_SIDE = 120;
+const MIN_IMAGE_AREA = 40_000;
+const MAX_IMAGES_PER_PART = 8;
+const MAX_IMAGES = 120;
+
+function keepImage(width: number | undefined, height: number | undefined): boolean {
+  if (!width || !height) return true;
+  return Math.min(width, height) >= MIN_IMAGE_SIDE && width * height >= MIN_IMAGE_AREA;
 }
 
 export interface ExtractedDocument {
@@ -108,7 +132,9 @@ function limitPartSize(parts: DocumentPartInput[]): DocumentPartInput[] {
       current = current ? `${current}\n\n${paragraph}` : paragraph;
     }
     if (current) pieces.push(current);
-    pieces.forEach((text, i) => result.push({ label: `${part.label} (${i + 1}/${pieces.length})`, text }));
+    pieces.forEach((text, i) =>
+      result.push({ label: `${part.label} (${i + 1}/${pieces.length})`, text, ...(i === 0 && part.images ? { images: part.images } : {}) })
+    );
   }
   return result;
 }
@@ -145,25 +171,78 @@ export function splitText(text: string, markdown = false): DocumentPartInput[] {
   return limitPartSize(parts);
 }
 
+/** pdf.js decodes images with ArrayBuffer.transferToFixedLength (Node 21+); copy on older Node. */
+function polyfillArrayBufferTransfer(): void {
+  const proto = ArrayBuffer.prototype as unknown as Record<string, unknown>;
+  if (typeof proto.transferToFixedLength === 'function') return;
+  const copy = function (this: ArrayBuffer, length = this.byteLength): ArrayBuffer {
+    const out = new ArrayBuffer(length);
+    new Uint8Array(out).set(new Uint8Array(this, 0, Math.min(length, this.byteLength)));
+    return out;
+  };
+  Object.defineProperty(ArrayBuffer.prototype, 'transferToFixedLength', { value: copy, configurable: true, writable: true });
+  if (typeof proto.transfer !== 'function') Object.defineProperty(ArrayBuffer.prototype, 'transfer', { value: copy, configurable: true, writable: true });
+}
+
 async function extractPdf(data: Uint8Array): Promise<DocumentPartInput[]> {
-  const { extractText, getDocumentProxy } = await import('unpdf');
+  polyfillArrayBufferTransfer();
+  const { extractImages, extractText, getDocumentProxy } = await import('unpdf');
   let pages: string[];
+  let pdf: Awaited<ReturnType<typeof getDocumentProxy>>;
   try {
-    const pdf = await getDocumentProxy(new Uint8Array(data));
+    pdf = await getDocumentProxy(new Uint8Array(data));
     pages = (await extractText(pdf, { mergePages: false })).text;
   } catch {
     throw badRequest('Could not read this PDF (it may be damaged or password-protected)');
   }
-  return pages
-    .map((text, i) => ({ label: `p. ${i + 1}`, text: cleanText(text) }))
-    .filter((part) => part.text.length > 0);
+  const parts: DocumentPartInput[] = [];
+  let total = 0;
+  for (const [i, raw] of pages.entries()) {
+    const images: ExtractedImage[] = [];
+    if (total < MAX_IMAGES) {
+      try {
+        for (const image of await extractImages(pdf, i + 1)) {
+          if (images.length >= MAX_IMAGES_PER_PART || total >= MAX_IMAGES) break;
+          if (!keepImage(image.width, image.height)) continue;
+          images.push({
+            filename: `p${i + 1}-${images.length + 1}.png`,
+            data: encodePng(image.width, image.height, image.channels, image.data),
+            width: image.width,
+            height: image.height,
+          });
+          total++;
+        }
+      } catch {
+        // Unusual image encodings are skipped; the text is still imported.
+      }
+    }
+    const text = cleanText(raw);
+    if (text || images.length) parts.push({ label: `p. ${i + 1}`, text: text || '(página con figuras)', ...(images.length ? { images } : {}) });
+  }
+  return parts;
 }
 
 async function extractDocx(data: Uint8Array): Promise<DocumentPartInput[]> {
   const mammoth = await import('mammoth');
   let html: string;
+  const figures: ExtractedImage[] = [];
   try {
-    html = (await mammoth.convertToHtml({ buffer: Buffer.from(data) })).value;
+    html = (
+      await mammoth.convertToHtml(
+        { buffer: Buffer.from(data) },
+        {
+          // Keep each figure in place as a marker, so it lands in the right section.
+          convertImage: mammoth.images.imgElement(async (image) => {
+            const buffer = Buffer.from(await image.read('base64'), 'base64');
+            const size = imageSize(buffer);
+            if (!keepImage(size?.width, size?.height)) return { src: '' };
+            const extension = (image.contentType.split('/')[1] ?? 'png').replace('jpeg', 'jpg').replace('x-emf', 'emf');
+            figures.push({ filename: `figura-${figures.length + 1}.${extension}`, data: buffer, width: size?.width, height: size?.height });
+            return { src: `rf-figure:${figures.length - 1}` };
+          }),
+        }
+      )
+    ).value;
   } catch {
     throw badRequest('Could not read this Word document');
   }
@@ -173,9 +252,13 @@ async function extractDocx(data: Uint8Array): Promise<DocumentPartInput[]> {
   pieces.forEach((piece, i) => {
     const heading = /<h[1-3][^>]*>([\s\S]*?)<\/h[1-3]>/i.exec(piece);
     const text = cleanText(htmlToText(piece));
-    if (!text) return;
+    const images = [...piece.matchAll(/rf-figure:(\d+)/g)]
+      .map((m) => figures[Number(m[1])])
+      .filter((image): image is ExtractedImage => Boolean(image) && isWebImage(image.filename))
+      .slice(0, MAX_IMAGES_PER_PART);
+    if (!text && images.length === 0) return;
     const label = heading ? htmlToText(heading[1]).slice(0, 120) || `Sección ${i + 1}` : i === 0 ? 'Inicio' : `Sección ${i + 1}`;
-    parts.push({ label, text });
+    parts.push({ label, text: text || '(sección con figuras)', ...(images.length ? { images } : {}) });
   });
   return parts;
 }
@@ -204,13 +287,34 @@ async function extractPptx(data: Uint8Array): Promise<DocumentPartInput[]> {
     .filter((path) => /^ppt\/slides\/slide\d+\.xml$/.test(path))
     .sort((a, b) => slideNumber(a) - slideNumber(b));
   const parts: DocumentPartInput[] = [];
+  let total = 0;
   for (const path of slides) {
     const n = slideNumber(path);
-    const body = xmlText(await zip.file(path)!.async('string'));
+    const xml = await zip.file(path)!.async('string');
+    const body = xmlText(xml);
+    // Pictures: <a:blip r:embed="rIdN"/> → ppt/slides/_rels/slideN.xml.rels → ../media/imageK.png
+    const images: ExtractedImage[] = [];
+    const rels = zip.file(`ppt/slides/_rels/slide${n}.xml.rels`);
+    if (rels && total < MAX_IMAGES) {
+      const relXml = await rels.async('string');
+      const targets = new Map([...relXml.matchAll(/<Relationship\b[^>]*?Id="([^"]+)"[^>]*?Target="([^"]+)"/g)].map((m) => [m[1], m[2]]));
+      for (const match of xml.matchAll(/<a:blip\b[^>]*?r:embed="([^"]+)"/g)) {
+        const target = targets.get(match[1]);
+        if (!target || images.length >= MAX_IMAGES_PER_PART || total >= MAX_IMAGES) continue;
+        const file = zip.file(`ppt/${target.replace(/^\.\.\//, '')}`);
+        if (!file || !isWebImage(target)) continue;
+        const data = await file.async('uint8array');
+        const size = imageSize(data);
+        if (!keepImage(size?.width, size?.height)) continue;
+        if (images.some((image) => image.filename === target.split('/').pop())) continue;
+        images.push({ filename: target.split('/').pop()!, data, width: size?.width, height: size?.height });
+        total++;
+      }
+    }
     const notesFile = zip.file(`ppt/notesSlides/notesSlide${n}.xml`);
     const notes = notesFile ? xmlText(await notesFile.async('string')).replace(/^\d+$/m, '').trim() : '';
     const text = [body, notes ? `Notas del orador:\n${notes}` : ''].filter(Boolean).join('\n\n');
-    if (text) parts.push({ label: `diapositiva ${n}`, text });
+    if (text || images.length) parts.push({ label: `diapositiva ${n}`, text: text || '(diapositiva con figuras)', ...(images.length ? { images } : {}) });
   }
   return parts;
 }

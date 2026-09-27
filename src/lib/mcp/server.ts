@@ -11,16 +11,18 @@ import path from 'path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { addCards, approveCards, deleteCards, listRevisions, revertRevision, searchCards, updateCard } from '@/lib/core/cards';
+import { addCards, approveCards, cardImageTexts, deleteCards, listRevisions, revertRevision, searchCards, updateCard } from '@/lib/core/cards';
 import { deleteDeck, listDecks, updateDeck } from '@/lib/core/decks';
 import { deleteDocument, getDocument, importDocumentFile, importDocumentText, listDocuments, readDocument } from '@/lib/core/documents';
 import { AppError } from '@/lib/core/errors';
 import { explainCard } from '@/lib/core/explain';
 import { exportApkg, importApkg } from '@/lib/core/anki';
+import { syncWithAnki } from '@/lib/core/anki-sync';
 import { exportCardsTsv, exportUserData } from '@/lib/core/export';
 import { importData } from '@/lib/core/import';
 import { optimizeScheduler } from '@/lib/core/optimizer';
-import { mediaPayload, saveMedia } from '@/lib/core/media';
+import { getMedia, mediaPayload, saveMedia } from '@/lib/core/media';
+import { imageSize } from '@/lib/core/occlusion';
 import { registerStudyApp } from './apps';
 import { updateSettings } from '@/lib/core/settings';
 import { getStats } from '@/lib/core/stats';
@@ -65,6 +67,7 @@ Two kinds of cards:
 - Basic: front (question) and back (short answer).
 - Cloze: front is a sentence with deletions, back is optional extra notes: "La {{c1::protamina}} revierte la {{c2::heparina}}" creates one card per cN (c1 hides "protamina", c2 hides "heparina"). Hints: {{c1::protamina::antídoto}}. Use cloze for definitions, lists of features, numbers and sentences from the source; one key term per deletion; group deletions that must be recalled together under the same cN.
 - Images: add_image returns ![description](media:ID) to paste into front, back or explanation (e.g. an anatomy picture with the question "¿Qué estructura señala la flecha?").
+- Image occlusion (anatomy, histology, radiology, labelled diagrams): add_cards with occlusion: { image, regions: [{ label, left, top, width, height }] } in fractions of the image (0–1). Each region becomes a card that covers it and asks what is underneath; give every region its label (the answer). If you can see the image, place the regions over the labelled structures; otherwise ask the learner to draw them in the web app (deck page → "Oclusión de imagen").
 Quality rules (from spaced-repetition research; the server flags violations in add_cards.warnings - fix them with update_card):
 - One fact per card; the front must have exactly one correct answer and make sense on its own, months later, without the source.
 - Ask for understanding, not recognition: prefer why/how/what/which, mechanisms, causes, comparisons, "what would you expect if…" over yes/no or true/false.
@@ -82,7 +85,8 @@ ORGANIZATION
 
 FROM A DOCUMENT (PDF, slides, notes, a web page…)
 1. If you can read the file yourself, call add_document with its title and full text (or content_base64 + filename for PDF/DOCX/PPTX files), and a deck for the subject. Otherwise ask the learner to upload it in the RecallForge web app and use list_documents.
-2. read_document part by part (follow nextPart). Each part is a page, slide or section with the number of cards already made from it; skip parts that are already covered unless asked.
+2. read_document part by part (follow nextPart). Each part is a page, slide or section with the number of cards already made from it, and its figures (images: diagrams, anatomy, micrographs, radiographs); skip parts that are already covered unless asked.
+   Figures: look at them with get_image. A labelled diagram or anatomical image is ideal for an image occlusion card (add_cards with occlusion, one region per label, using the figure's markdown as image); other useful figures can go in front or explanation of a basic card.
 3. For each part, write cards following the quality rules and send them with add_cards using document_id, document_part and draft: true. The source is filled in automatically.
 4. Tell the learner how many drafts were created per section and ask them to review: they can edit and approve in the web app ("Por revisar"), or you can show them and call approve_cards. Never approve on your own.
 
@@ -133,8 +137,8 @@ const questionFormat = z
   .describe('recall/typing move the schedule; multiple_choice/true_false are practice (checked, logged, schedule unchanged)');
 
 const cardShape = {
-  front: z.string().describe('Question or prompt shown to the learner'),
-  back: z.string().describe('Concise expected answer'),
+  front: z.string().describe('Question shown to the learner, or a cloze text: "La {{c1::protamina}} revierte la {{c2::heparina}}" (one card per cN)'),
+  back: z.string().optional().describe('Concise expected answer. Optional for cloze cards (front with {{c1::…}}), where it holds extra notes'),
   explanation: z.string().optional().describe('Context, reasoning, mnemonic or clinical relevance used for feedback'),
   source: z.string().optional().describe('Reference: book, chapter, page, lecture, URL'),
   excerpt: z.string().optional().describe('Exact sentence(s) of the source this card is based on, copied verbatim'),
@@ -166,7 +170,9 @@ export function createMcpServer(user: AuthUser): McpServer {
       annotations: { readOnlyHint: true },
     },
     ({ deck, tag, mode, format }) =>
-      withImages(user.id, () => nextCard(user.id, { deck, tag, mode, format }), (d: { card?: { front: string } | null }) => [d.card?.front])
+      withImages(user.id, () => nextCard(user.id, { deck, tag, mode, format }), (d: { card?: Parameters<typeof cardImageTexts>[0] | null }) =>
+        d.card ? cardImageTexts(d.card) : []
+      )
   );
 
   server.registerTool(
@@ -179,11 +185,7 @@ export function createMcpServer(user: AuthUser): McpServer {
       annotations: { readOnlyHint: true },
     },
     ({ card_id }) =>
-      withImages(user.id, () => revealCard(user.id, card_id), (d: { card: { front: string; back: string; explanation: string; revealed?: string } }) => [
-        d.card.revealed ?? d.card.front,
-        d.card.back,
-        d.card.explanation,
-      ])
+      withImages(user.id, () => revealCard(user.id, card_id), (d: { card: Parameters<typeof cardImageTexts>[0] }) => cardImageTexts(d.card))
   );
 
   server.registerTool(
@@ -298,6 +300,28 @@ export function createMcpServer(user: AuthUser): McpServer {
           .array(
             z.object({
               ...cardShape,
+              front: cardShape.front.optional().describe('Question or cloze text. For image occlusion: an optional heading'),
+              occlusion: z
+                .object({
+                  image: z.string().describe('The image from add_image: its markdown ![…](media:ID), "media:ID" or the id'),
+                  regions: z
+                    .array(
+                      z.object({
+                        label: z.string().optional().describe('Name of the structure under the region (the answer). Always give it.'),
+                        shape: z.enum(['rect', 'ellipse', 'polygon']).optional().describe('Default rect'),
+                        left: z.number().min(0).max(1).optional().describe('Fractions of the image width/height, 0–1'),
+                        top: z.number().min(0).max(1).optional(),
+                        width: z.number().min(0).max(1).optional(),
+                        height: z.number().min(0).max(1).optional(),
+                        points: z.array(z.tuple([z.number().min(0).max(1), z.number().min(0).max(1)])).optional().describe('polygon: [[x, y], …]'),
+                        group: z.number().int().min(1).optional().describe('Regions with the same group are asked together'),
+                      })
+                    )
+                    .min(1),
+                  hide_all: z.boolean().optional().describe('Default true: cover every region and ask one'),
+                })
+                .optional()
+                .describe('Image occlusion: one card per region, asking what structure is hidden'),
               deck: z.string().optional().describe('Overrides the default deck'),
               document_part: z.number().int().min(0).optional().describe('Index of the document part (page/slide/section) it comes from'),
             })
@@ -313,7 +337,11 @@ export function createMcpServer(user: AuthUser): McpServer {
           documentId: document_id,
           draft,
           dryRun: dry_run,
-          cards: cards.map(({ document_part, ...card }) => ({ ...card, documentPart: document_part })),
+          cards: cards.map(({ document_part, occlusion, ...card }) => ({
+            ...card,
+            documentPart: document_part,
+            ...(occlusion ? { occlusion: { image: occlusion.image, regions: occlusion.regions, hideAll: occlusion.hide_all } } : {}),
+          })),
         })
       )
   );
@@ -380,7 +408,7 @@ export function createMcpServer(user: AuthUser): McpServer {
     {
       title: 'Read document',
       description:
-        'Read consecutive parts (pages, slides or sections) of a document, each with its index, label and how many cards already come from it. Continue with from_part = nextPart until it is null. Use outline_only to see the structure and coverage without the text.',
+        'Read consecutive parts (pages, slides or sections) of a document, each with its index, label, how many cards already come from it and its figures (images, see get_image). Continue with from_part = nextPart until it is null. Use outline_only to see the structure and coverage without the text.',
       inputSchema: {
         document_id: z.string(),
         from_part: z.number().int().min(0).optional(),
@@ -494,6 +522,46 @@ export function createMcpServer(user: AuthUser): McpServer {
       },
     },
     ({ content_base64, filename }) => run(() => ({ media: saveMedia(user.id, { filename, data: new Uint8Array(Buffer.from(content_base64, 'base64')) }) }))
+  );
+
+  server.registerTool(
+    'sync_anki',
+    {
+      title: 'Sync with Anki',
+      description:
+        "Two-way sync with the learner's Anki desktop (needs Anki open with the AnkiConnect add-on, code 2055492159): new and edited RecallForge cards go to Anki (to study on the phone after Anki syncs with AnkiWeb), and reviews made in Anki come back here so the schedule and progress include them. Nothing is deleted. Cards imported from Anki are not sent back.",
+      inputSchema: {
+        deck: z.string().optional().describe('Only this subject'),
+        url: z.string().optional().describe('AnkiConnect address (default http://127.0.0.1:8765)'),
+        key: z.string().optional().describe('AnkiConnect API key, if the learner set one'),
+        dry_run: z.boolean().optional().describe('Only report what would change'),
+      },
+    },
+    ({ deck, url, key, dry_run }) => run(() => syncWithAnki(user.id, { deck, url, key, dryRun: dry_run }))
+  );
+
+  server.registerTool(
+    'get_image',
+    {
+      title: 'Look at an image',
+      description:
+        'See a stored image (a figure of a document from read_document, or an image of a card). Use it to write accurate cards about a diagram, to decide whether it deserves an image occlusion card, and to place the occlusion regions over the labelled structures.',
+      inputSchema: { image: z.string().describe('The image id, "media:ID" or its ![…](media:ID) markdown') },
+      annotations: { readOnlyHint: true },
+    },
+    ({ image }) =>
+      run(() => {
+        const id = /media:([A-Za-z0-9-]+)/.exec(image)?.[1] ?? image.trim();
+        const media = getMedia(user.id, id);
+        const size = imageSize(media.data);
+        return { id, filename: media.filename, mimeType: media.mimeType, width: size?.width ?? null, height: size?.height ?? null };
+      }).then((result) => {
+        if (result.isError) return result;
+        const { id } = JSON.parse((result.content[0] as { text: string }).text) as { id: string };
+        const media = getMedia(user.id, id);
+        if (!media.mimeType.startsWith('image/') || media.mimeType === 'image/svg+xml') return result;
+        return { content: [...result.content, { type: 'image' as const, data: media.data.toString('base64'), mimeType: media.mimeType }] };
+      })
   );
 
   server.registerTool(
@@ -649,6 +717,25 @@ export function createMcpServer(user: AuthUser): McpServer {
           content: {
             type: 'text',
             text: `Start a RecallForge ${mode ? `${mode} ` : ''}study session${deck ? ` for deck "${deck}"` : ''}${tag ? ` on tag "${tag}"` : ''}. Follow the RecallForge study protocol: ask one question at a time, wait for my answer, then reveal, give feedback and grade.`,
+          },
+        },
+      ],
+    })
+  );
+
+  server.registerPrompt(
+    'plan_today',
+    {
+      title: 'Plan for today',
+      description: 'What to study today, how long it takes and what is at risk (good for a scheduled morning task)',
+    },
+    () => ({
+      messages: [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text: 'Con RecallForge (get_progress_map), dime en 3-4 líneas qué tengo que estudiar hoy, cuánto tiempo me llevará y qué está en riesgo (exámenes cercanos, tarjetas que olvido). Termina ofreciendo empezar la sesión con study.',
           },
         },
       ],

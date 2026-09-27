@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { api } from '@/lib/api/client';
 import type { DocumentPartSummary, DocumentSummary, ReadDocumentResult } from '@/lib/core/documents';
 import { agentPrompt, Coverage } from './documents-view';
+import { OcclusionEditor } from './occlusion-editor';
 
 type DocumentDetail = DocumentSummary & { outline: DocumentPartSummary[] };
 
@@ -14,6 +15,8 @@ export function DocumentDetailView({ documentId }: { documentId: string }) {
   const router = useRouter();
   const [document, setDocument] = useState<DocumentDetail | null>(null);
   const [open, setOpen] = useState<{ index: number; text: string } | null>(null);
+  const [occluding, setOccluding] = useState<{ part: number; image: string } | null>(null);
+  const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -85,6 +88,7 @@ export function DocumentDetailView({ documentId }: { documentId: string }) {
       </div>
 
       <div className="divide-y rounded-xl border bg-card">
+        {notice && <p className="p-3 text-sm text-emerald-700 dark:text-emerald-400">{notice}</p>}
         {document.outline.map((part) => (
           <div key={part.index} id={`part-${part.index}`} className="scroll-mt-20 p-3 text-sm">
             <button className="flex w-full items-center gap-3 text-left" onClick={() => void togglePart(part.index)}>
@@ -96,6 +100,33 @@ export function DocumentDetailView({ documentId }: { documentId: string }) {
             </button>
             {open?.index === part.index && (
               <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap rounded bg-muted p-3 text-xs">{open.text}</pre>
+            )}
+            {(part.images?.length ?? 0) > 0 && (
+              <div className="mt-2 flex flex-wrap gap-2">
+                {part.images!.map((image) => (
+                  <div key={image.id} className="flex flex-col items-center gap-1">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={`/api/v1/media/${image.id}`} alt={`Figura de ${part.label}`} className="h-24 rounded border object-contain" />
+                    <button className="text-xs underline hover:text-foreground" onClick={() => setOccluding({ part: part.index, image: image.id })}>
+                      Crear oclusión
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {occluding?.part === part.index && (
+              <div className="mt-3 rounded-lg border p-3">
+                <OcclusionEditor
+                  key={occluding.image}
+                  deck={document.deck?.name ?? document.title}
+                  initialImage={occluding.image}
+                  source={{ documentId: document.id, documentPart: part.index }}
+                  onCreated={(count) => {
+                    setOccluding(null);
+                    setNotice(`${count} tarjetas de oclusión creadas en «${document.deck?.name ?? document.title}».`);
+                  }}
+                />
+              </div>
             )}
           </div>
         ))}

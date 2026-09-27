@@ -6,13 +6,13 @@
 // once per connection.
 // ============================================================================
 
-import Database from 'better-sqlite3';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { runMigrations } from './migrations';
+import { openSqlite, type SqliteDatabase } from './sqlite';
 
-export type DB = Database.Database;
+export type DB = SqliteDatabase;
 
 const globalForDb = globalThis as unknown as { __recallforgeDb?: DB };
 
@@ -21,7 +21,10 @@ const globalForDb = globalThis as unknown as { __recallforgeDb?: DB };
  * web app and every agent. Override with RECALLFORGE_DB (or DATABASE_PATH).
  */
 export function resolveDatabasePath(): string {
-  const raw = process.env.RECALLFORGE_DB || process.env.DATABASE_PATH;
+  const raw =
+    process.env.RECALLFORGE_DB ||
+    process.env.DATABASE_PATH ||
+    (process.env.RECALLFORGE_DIR ? path.join(process.env.RECALLFORGE_DIR.replace(/^~(?=$|[\\/])/, os.homedir()), 'recallforge.db') : '');
   if (!raw) return path.join(os.homedir(), '.recallforge', 'recallforge.db');
   if (raw.startsWith('~/')) return path.join(os.homedir(), raw.slice(2));
   return path.isAbsolute(raw) ? raw : path.join(process.cwd(), raw);
@@ -29,7 +32,7 @@ export function resolveDatabasePath(): string {
 
 export function openDatabase(file: string): DB {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const db = new Database(file);
+  const db = openSqlite(file);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.pragma('busy_timeout = 5000');
@@ -48,6 +51,11 @@ export function getDb(): DB {
 export function closeDb(): void {
   globalForDb.__recallforgeDb?.close();
   globalForDb.__recallforgeDb = undefined;
+}
+
+/** Consistent copy of the database to another file (safe while it is in use). */
+export function backupDatabase(target: string): void {
+  getDb().exec(`VACUUM INTO '${target.replace(/'/g, "''")}'`);
 }
 
 export function genId(): string {

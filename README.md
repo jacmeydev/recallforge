@@ -22,6 +22,9 @@ Le dices a tu agente (Claude, ChatGPT, Codex, Cursor, VS Code…) «vamos a repa
 - [Estudiar dentro del chat](#estudiar-dentro-del-chat)
 - [Trae tus mazos de Anki](#trae-tus-mazos-de-anki)
 - [Cloze e imágenes](#cloze-e-imágenes)
+- [Oclusión de imagen](#oclusión-de-imagen)
+- [Sincronizar con Anki y el móvil](#sincronizar-con-anki-y-el-móvil)
+- [Recordatorio diario](#recordatorio-diario)
 - [De tus documentos a tarjetas](#de-tus-documentos-a-tarjetas)
 - [Organización por materias](#organización-por-materias)
 - [Mapa de progreso](#mapa-de-progreso)
@@ -95,41 +98,44 @@ También puedes pedirle:
 
 ## Instalación
 
-Requisitos: [Node.js](https://nodejs.org) 20 o superior.
+**Claude Desktop (un clic):** descarga `recallforge.mcpb` de la [última versión](https://github.com/jacmeydev/recallforge/releases/latest) y ábrelo; Claude Desktop lo instala como extensión (Ajustes → Extensiones). No necesitas instalar nada más: funciona en macOS, Windows y Linux.
+
+**Cualquier otro agente (Claude Code, Codex, Cursor, VS Code, Windsurf…):** con [Node.js](https://nodejs.org) 20 o superior instalado, basta con una línea de configuración (ver abajo): `npx` descarga RecallForge la primera vez.
+
+**Desde el código** (para la web local y para desarrollar):
 
 ```bash
 git clone https://github.com/jacmeydev/recallforge.git
 cd recallforge
 npm install        # también compila el comando recallforge (dist/cli.mjs)
-npm run build      # opcional: compila la web local para que arranque rápido
+npm run build      # compila la web local para que arranque rápido
 ```
 
-Eso es todo: no hay que crear cuentas ni configurar nada. Tus datos se guardan en `~/.recallforge/recallforge.db` (se crea solo la primera vez).
+No hay que crear cuentas ni configurar nada. Tus datos se guardan en `~/.recallforge/recallforge.db` (se crea solo la primera vez) y los comparten la extensión, los agentes y la web.
 
 ## Conectar tu agente
 
-RecallForge funciona como **servidor MCP por stdio**: tu agente lo arranca cuando lo necesita. Sustituye `/ruta/a/recallforge` por la carpeta donde lo clonaste (la web local te muestra la ruta exacta en *Agentes y ajustes*).
+RecallForge funciona como **servidor MCP por stdio**: tu agente lo arranca cuando lo necesita.
 
 **Claude Code**
 
 ```bash
-claude mcp add recallforge -- node /ruta/a/recallforge/dist/cli.mjs mcp
+claude mcp add recallforge -- npx -y recallforge mcp
 ```
 
-**Claude Desktop, Cursor, VS Code, Windsurf, Codex y cualquier cliente MCP** (archivo de configuración de servidores MCP):
+**Codex, Cursor, VS Code, Windsurf y cualquier cliente MCP** (archivo de configuración de servidores MCP):
 
 ```json
 {
   "mcpServers": {
-    "recallforge": {
-      "command": "node",
-      "args": ["/ruta/a/recallforge/dist/cli.mjs", "mcp"]
-    }
+    "recallforge": { "command": "npx", "args": ["-y", "recallforge", "mcp"] }
   }
 }
 ```
 
-Al conectarse, el agente recibe automáticamente el **protocolo de estudio** (cómo preguntar sin dar pistas, evaluar el significado y calificar) y las **reglas de calidad** para crear tarjetas. También hay dos prompts: `study` (empezar sesión) y `make_cards` (convertir material en tarjetas).
+Si lo instalaste desde el código, usa `"command": "node", "args": ["/ruta/a/recallforge/dist/cli.mjs", "mcp"]` (la web local te muestra la ruta exacta en *Agentes y ajustes*).
+
+Al conectarse, el agente recibe automáticamente el **protocolo de estudio** (cómo preguntar sin dar pistas, evaluar el significado y calificar) y las **reglas de calidad** para crear tarjetas. También hay tres prompts: `study` (empezar sesión), `make_cards` (convertir material en tarjetas) y `plan_today` (qué estudiar hoy, ideal para una tarea programada cada mañana).
 
 **Agentes sin MCP** (OpenClaw, n8n, scripts): usan la [API REST](#api-rest) con la web local abierta. La skill [`skills/recallforge/SKILL.md`](skills/recallforge/SKILL.md) les enseña el protocolo y las llamadas; funciona con cualquier agente compatible con `SKILL.md`.
 
@@ -166,6 +172,40 @@ Importar el mismo mazo otra vez solo añade lo nuevo. Y al revés: `node dist/cl
 
 - **Cloze** (completar huecos), con la misma sintaxis de Anki: `La {{c1::protamina}} revierte la {{c2::heparina::anticoagulante}}` crea dos tarjetas, «La […] revierte la heparina» y «La protamina revierte la [anticoagulante]». Las tarjetas de una misma nota no salen el mismo día, para que una no delate a la otra. Al editar el texto se actualizan todas.
 - **Imágenes** (anatomía, histología, radiología, ECG): se guardan dentro de la base de datos y se insertan con `![descripción](media:ID)`. En la web hay un botón *Añadir imagen*; el agente usa `add_image`. Los agentes que ven imágenes las reciben junto con la tarjeta.
+
+## Oclusión de imagen
+
+La forma de estudiar anatomía, histología y radiología: una imagen con las estructuras tapadas, y cada región es una tarjeta.
+
+- **En la web**: en una materia, *Nueva tarjeta → Oclusión de imagen*: sube la imagen, arrastra (con el ratón o el dedo) sobre cada estructura y escribe su nombre. Regiones con el mismo número de grupo se preguntan juntas. Puedes tapar todas y preguntar una, o tapar solo la preguntada.
+- **Con el agente**: `add_cards` con `occlusion` (imagen y regiones en coordenadas relativas). Si tu agente ve imágenes, puede colocar él las regiones sobre un esquema rotulado.
+- **Compatible con Anki**: las notas de oclusión de Anki se importan con sus máscaras (rectángulos, elipses, polígonos, grupos) y se exportan como oclusión nativa de Anki, así que en AnkiDroid y AnkiMobile se ven igual.
+
+Las **figuras de tus documentos** también sirven: al subir un PDF, un PowerPoint o un Word, RecallForge extrae sus imágenes (descarta iconos y logotipos) y las asocia a su página, diapositiva o sección. En la web, cada figura tiene un botón *Crear oclusión*; el agente las ve con `get_image` y puede convertir un esquema en tarjetas de oclusión o de imagen.
+
+## Sincronizar con Anki y el móvil
+
+Con Anki de escritorio abierto y el complemento **AnkiConnect** (código `2055492159`):
+
+```bash
+node dist/cli.mjs sync-anki          # o el botón «Sincronizar ahora» en la web, o pídeselo al agente (sync_anki)
+```
+
+- Tus tarjetas nuevas y editadas pasan a Anki, en la misma materia, con imágenes, cloze y oclusión. Cuando Anki se sincroniza con AnkiWeb, las tienes en **AnkiDroid y AnkiMobile**.
+- Los repasos que hagas en Anki (en el móvil o en el ordenador) vuelven a RecallForge y se aplican en orden, así que tu programación, tus estadísticas y tu mapa de progreso los incluyen.
+- Las tarjetas que importaste de Anki quedan enlazadas con las originales: no se duplican.
+- No se borra nada en ningún lado.
+
+Sin AnkiConnect también puedes exportar un `.apkg` (más abajo) y abrirlo en el móvil.
+
+## Recordatorio diario
+
+```bash
+node dist/cli.mjs remind --install 08:45   # un aviso cada mañana: «45 tarjetas para hoy (~9 min)»
+node dist/cli.mjs remind --uninstall
+```
+
+Usa las notificaciones y el programador de tu sistema (macOS, Windows o Linux) y solo avisa si hay algo pendiente. Si tu agente admite tareas programadas, el prompt `plan_today` hace lo mismo en el chat.
 
 ## De tus documentos a tarjetas
 
@@ -280,6 +320,8 @@ La IA propone; tú decides.
 | `import_data` | Importa mazos de Anki (.apkg/.colpkg), copias JSON o CSV/TSV, desde una ruta de tu ordenador o como texto. |
 | `export_data` | Escribe un `.apkg` (Anki, AnkiDroid, AnkiMobile), la copia JSON completa o un TSV. |
 | `add_image` | Guarda una imagen y devuelve el texto para ponerla en una tarjeta. |
+| `get_image` | Deja al agente ver una imagen (una figura de un documento o la de una tarjeta). |
+| `sync_anki` | Sincroniza con Anki abierto (AnkiConnect): envía tarjetas y trae los repasos hechos allí. |
 | `optimize_scheduler` | Ajusta FSRS a tu historial de repasos. |
 | `list_decks`, `update_deck`, `delete_deck` | Árbol de materias; renombrar, mover, poner fecha de examen o borrar. |
 | `update_settings` | Nuevas por día, repasos por día, retención objetivo, zona horaria. |
@@ -332,6 +374,7 @@ Disponible mientras la web local está abierta (`http://127.0.0.1:3030`). En loc
 | POST | `/api/v1/import` | Importar `.apkg`, JSON de RecallForge o CSV/TSV (`multipart` con `file`, `deck?`, `draft?`, o el texto tal cual) |
 | POST, GET | `/api/v1/media`, `/api/v1/media/{id}` | Subir una imagen (`multipart` con `file`) / descargarla |
 | POST | `/api/v1/settings/optimize` | Ajustar FSRS a tu historial (`{ apply? }`) |
+| POST | `/api/v1/anki/sync` | Sincronizar con Anki (`{ deck?, url?, key?, dryRun? }`) |
 
 ```bash
 URL=http://127.0.0.1:3030
@@ -385,6 +428,7 @@ Variables opcionales:
 npm run dev         # web local en modo desarrollo (127.0.0.1:3030)
 npm run build:cli   # recompila dist/cli.mjs (MCP por stdio)
 npm run build:widget  # recompila el widget del chat (src/widget → src/lib/mcp/widget.generated.ts)
+npm run build:mcpb    # dist/recallforge.mcpb (Claude Desktop) y build/npm (paquete npm)
 npm test            # vitest: núcleo, cloze, imágenes, Anki (paquetes reales), optimizador, documentos, API, MCP y MCP Apps
 npm run typecheck
 npm run lint
@@ -404,6 +448,8 @@ skills/           skill para agentes
 tests/            pruebas
 ```
 
+**Publicar una versión**: sube la versión en `package.json` y crea la etiqueta (`git tag v3.0.0 && git push origin v3.0.0`). GitHub Actions crea la *release* con `recallforge.mcpb` y, si el repositorio tiene el secreto `NPM_TOKEN`, publica el paquete `recallforge` en npm.
+
 Tecnologías: Node.js, TypeScript, SQLite (better-sqlite3), ts-fsrs, MCP TypeScript SDK, Next.js 16, React 19, Tailwind y Vitest.
 
 ## Qué cumple y qué no
@@ -411,7 +457,7 @@ Tecnologías: Node.js, TypeScript, SQLite (better-sqlite3), ts-fsrs, MCP TypeScr
 | Requisito | Cómo |
 |---|---|
 | Velocidad y estabilidad | SQLite local con índices; siguiente tarjeta + calificación en milisegundos incluso con 20 000 tarjetas (hay una prueba automática que lo mide). |
-| Crear tarjetas con poco esfuerzo | PDF, Word, PowerPoint, texto, HTML → partes → el agente crea **borradores editables**, básicos o cloze, con imágenes. Mazos de Anki en un comando. Escaneos y vídeos, a través de tu agente. |
+| Crear tarjetas con poco esfuerzo | PDF, Word, PowerPoint, texto, HTML → partes y figuras → el agente crea **borradores editables**, básicos, cloze o de oclusión de imagen. Mazos de Anki en un comando. Escaneos y vídeos, a través de tu agente. |
 | Control del usuario | Corregir la nota, deshacer, editar con historial y restaurar, elegir materia, etiqueta, modo y formato. |
 | Algoritmo confiable y configurable | FSRS con retención objetivo, límites diarios y pasos ajustables, **optimizado con tu propio historial**; previsión de 7 días en repasos y minutos. |
 | Modos | Repaso, sesión rápida, examen, escribir, opción múltiple y verdadero/falso. |
@@ -426,12 +472,10 @@ Tecnologías: Node.js, TypeScript, SQLite (better-sqlite3), ts-fsrs, MCP TypeScr
 | «Explícame esto» | Botón en cada tarjeta (web) y `explain_card` (agente). |
 | Examen separado del repaso espaciado | Cola propia sin límites diarios; la práctica de opción múltiple y V/F no toca la programación. |
 
-**Limitaciones conocidas**: RecallForge no incluye una IA propia, así que la calificación semántica, las explicaciones a fondo, la reformulación y la lectura de escaneos o vídeos las hace tu agente; en la web sin agente te autoevalúas tú. La oclusión de imagen de Anki se importa como pregunta sobre la imagen, sin dibujar las máscaras. En el móvil se estudia a través del `.apkg` (AnkiDroid/AnkiMobile) o del chat de tu agente si lo conectas por [acceso remoto](DEPLOYMENT.md); no hay sincronización automática.
+**Limitaciones conocidas**: RecallForge no incluye una IA propia, así que la calificación semántica, las explicaciones a fondo, la reformulación y la lectura de escaneos o vídeos las hace tu agente; en la web sin agente te autoevalúas tú. En el móvil se estudia con AnkiDroid/AnkiMobile (sincronizando con Anki o con un `.apkg`) o con el chat de tu agente si lo conectas por [acceso remoto](DEPLOYMENT.md). Las notas de oclusión solo pasan a Anki por AnkiConnect cuando tu Anki ya tiene su tipo de nota de oclusión (se crea al hacer una oclusión en Anki una vez). La web local no viene en la extensión de Claude Desktop ni en el paquete npm: para ella, instala desde el código.
 
 ## Hoja de ruta
 
-- Oclusión de imagen nativa (dibujar máscaras sobre la imagen) y extracción de imágenes de los PDF y diapositivas.
-- Sincronización con Anki en ambos sentidos (AnkiConnect) para repasar en el móvil sin exportar a mano.
-- Publicación en npm para instalar con `npx recallforge`.
-- OCR para PDF escaneados.
-- Recordatorios: un agente programado que consulte `get_stats` cada mañana y te avise.
+- OCR para PDF escaneados (hoy los lee tu agente si tiene visión).
+- Editar las regiones de una oclusión ya creada desde la web.
+- Audio en las tarjetas (idiomas, auscultación).

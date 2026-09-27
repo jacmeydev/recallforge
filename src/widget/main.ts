@@ -10,7 +10,9 @@ import { App, applyDocumentTheme, applyHostFonts, applyHostStyleVariables, type 
 import type { ProgressMap } from '@/lib/core/progress';
 import type { GradeResult, NextCardResult, RevealResult } from '@/lib/core/study';
 import type { Rating } from '@/lib/core/types';
-import { renderRichText } from '@/lib/ui/rich-text';
+import { OCCLUSION_CSS, renderOcclusion, renderRichText } from '@/lib/ui/rich-text';
+
+document.head.insertAdjacentHTML('beforeend', `<style>${OCCLUSION_CSS}</style>`);
 
 type Filter = { deck?: string; tag?: string; mode?: 'normal' | 'exam' | 'quick'; format?: 'recall' | 'typing' | 'multiple_choice' | 'true_false' };
 type Images = Record<string, string>;
@@ -192,6 +194,9 @@ const judgeTyped = () =>
 
 async function reportToModel() {
   const lines = [
+    state.view === 'progress'
+      ? 'The learner sees the RecallForge progress map in the chat (interactive widget).'
+      : 'The learner is studying in the RecallForge widget shown in the chat: do not ask the cards in chat; answer only what they ask (Explícame, Mejorar tarjeta…).',
     `RecallForge study widget — ${state.reviewed} answered, ${state.correct} right${isPractice() ? ' (practice, schedule unchanged)' : ''}.`,
     state.failed.length ? `Failed: ${state.failed.slice(-10).map((f) => `"${f.front}" → "${f.back}" (${f.id})`).join('; ')}` : '',
   ].filter(Boolean);
@@ -270,7 +275,7 @@ function renderStudy(): string {
     const typed = state.answer.trim();
     body += `<hr class="divider">
       ${typed ? `<div class="muted">Tu respuesta: «${esc(typed)}»</div>` : ''}
-      ${r.card.kind === 'cloze' && !isPractice() ? '' : `<div class="answer rf-rich">${rich(r.card.back)}</div>`}
+      ${(r.card.kind === 'cloze' && !isPractice()) || !r.card.back ? '' : `<div class="answer rf-rich">${rich(r.card.back)}</div>`}
       ${r.card.cloze?.extra ? `<div class="extra rf-rich">${rich(r.card.cloze.extra)}</div>` : ''}
       ${r.card.explanation ? `<div class="explanation rf-rich">${rich(r.card.explanation)}</div>` : ''}
       ${renderSource(r)}
@@ -297,11 +302,18 @@ function renderStudy(): string {
   return `<div class="card">
     <div class="top"><span>${esc(card.deck.name)}${state.filter.mode === 'exam' ? ' · modo examen' : ''}${isPractice() ? ' · práctica' : ''}</span>${counts}</div>
     <div class="question rf-rich">${rich(questionText)}</div>
+    ${occlusionHtml(r, q)}
     ${body}
     <div class="actions">${secondary}</div>
     ${state.notice ? `<div class="notice">${esc(state.notice)}</div>` : ''}
     ${state.error ? `<div class="error">${esc(state.error)}</div>` : ''}
   </div>`;
+}
+
+function occlusionHtml(r: RevealResult | null, q: NextCardResult): string {
+  const view = r?.card.occlusion ?? q.card?.occlusion;
+  if (!view) return '';
+  return `<div class="question">${renderOcclusion(view, Boolean(r), (id) => state.images[id] ?? null)}</div>`;
 }
 
 function renderPractice(): string {
@@ -501,6 +513,8 @@ app.ontoolresult = (params) => {
     showNext(data.next, data.images);
   }
   render();
+  // Tell the agent the widget is really on screen (it cannot know otherwise, e.g. over HTTP).
+  void reportToModel();
 };
 app.onhostcontextchanged = (ctx) => applyContext(ctx as McpUiHostContext);
 

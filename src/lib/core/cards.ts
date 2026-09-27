@@ -11,15 +11,48 @@ import { badRequest, notFound } from './errors';
 import { getSettings } from './settings';
 import { checkCardQuality } from './quality';
 import { clozeAnswer, clozeOrdinals, clozePlain, clozeQuestion, clozeRevealed, isCloze } from './cloze';
+import { occlusionAnswer, occlusionForQuestion, occlusionOrdinals } from './occlusion';
 import { containsLoosely, contentWords, similarity } from './text';
 import { retrievability } from './scheduler';
-import type { Card, CardKind, CardRow, QuestionCard, StudySettings } from './types';
+import type { Card, CardKind, CardRow, Occlusion, OcclusionShape, QuestionCard, StudySettings } from './types';
 
 const tagsSchema = z.array(z.string().trim().min(1).max(100)).max(30);
 
+const unit = z.number().min(0).max(1);
+
+/** Image occlusion: an image and the regions to hide, in coordinates relative to the image (0–1). */
+export const OcclusionInputSchema = z.object({
+  /** The image: its media id, "media:ID" or the ![…](media:ID) markdown from add_image. */
+  image: z.string().trim().min(1),
+  regions: z
+    .array(
+      z.object({
+        /** Name of the structure under the region (the answer). */
+        label: z.string().trim().max(300).optional(),
+        shape: z.enum(['rect', 'ellipse', 'polygon']).optional(),
+        left: unit.optional(),
+        top: unit.optional(),
+        width: unit.optional(),
+        height: unit.optional(),
+        points: z.array(z.tuple([unit, unit])).min(3).max(100).optional(),
+        /** Regions with the same group are asked together in one card (default: one card per region). */
+        group: z.number().int().min(1).max(500).optional(),
+      })
+    )
+    .min(1)
+    .max(200),
+  /** true (default): cover every region and ask one; false: cover only the region asked. */
+  hideAll: z.boolean().optional(),
+});
+
 export const CardInputSchema = z.object({
-  /** Question, or a cloze text such as "La {{c1::protamina}} revierte la {{c2::heparina}}" (one card per cN). */
-  front: z.string().trim().min(1).max(8000),
+  /**
+   * Question, or a cloze text such as "La {{c1::protamina}} revierte la {{c2::heparina}}" (one card per cN).
+   * For image occlusion: an optional heading shown above the image.
+   */
+  front: z.string().trim().max(8000).default(''),
+  /** Image occlusion card(s): one card per region or group. */
+  occlusion: OcclusionInputSchema.optional(),
   /** Answer. Optional for cloze cards, where it holds extra notes shown after answering. */
   back: z.string().trim().max(8000).optional(),
   explanation: z.string().trim().max(8000).optional(),
@@ -106,6 +139,14 @@ function normalizeFront(front: string): string {
   return front.normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
+/** Accepts a media id, "media:ID" or ![…](media:ID) and checks the image exists. */
+function resolveMediaRef(userId: string, ref: string, index: number): string {
+  const id = /media:([A-Za-z0-9-]+)/.exec(ref)?.[1] ?? ref.trim();
+  const row = getDb().prepare(`SELECT mime_type FROM media WHERE user_id = ? AND id = ?`).get(userId, id) as { mime_type: string } | undefined;
+  if (!row || !row.mime_type.startsWith('image/')) throw badRequest(`Card ${index}: image ${ref} not found (upload it first with add_image)`);
+  return id;
+}
+
 /** Duplicate key: the question text, plus the deletion number for cloze cards. */
 function frontKey(front: string, ord: number | null | undefined): string {
   return ord ? `${normalizeFront(front)}#c${ord}` : normalizeFront(front);
@@ -124,14 +165,40 @@ function checkClozeQuality(text: string): string[] {
   return issues;
 }
 
-/** The answer the learner must produce (for cloze cards, this card's deleted text). */
-export function answerOf(row: Pick<CardRow, 'front' | 'back' | 'kind' | 'cloze_ord'>): string {
-  return row.kind === 'cloze' ? clozeAnswer(row.front, row.cloze_ord ?? 1) : row.back;
+export function parseOcclusion(raw: string | null | undefined): Occlusion | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as Occlusion;
+  } catch {
+    return null;
+  }
 }
 
-/** The question as asked (for cloze cards, with this card's deletion hidden). */
+/** The answer the learner must produce (cloze: this card's deleted text; occlusion: the names of the hidden regions). */
+export function answerOf(row: Pick<CardRow, 'front' | 'back' | 'kind' | 'cloze_ord'> & { occlusion?: string | null }): string {
+  if (row.kind === 'cloze') return clozeAnswer(row.front, row.cloze_ord ?? 1);
+  if (row.kind === 'occlusion') {
+    const occlusion = parseOcclusion(row.occlusion);
+    return (occlusion && occlusionAnswer(occlusion, row.cloze_ord ?? 1)) || '';
+  }
+  return row.back;
+}
+
+/** The question as asked (cloze: with this card's deletion hidden; occlusion: the heading and what to name). */
 export function questionOf(row: Pick<CardRow, 'front' | 'kind' | 'cloze_ord'>): string {
-  return row.kind === 'cloze' ? clozeQuestion(row.front, row.cloze_ord ?? 1) : row.front;
+  if (row.kind === 'cloze') return clozeQuestion(row.front, row.cloze_ord ?? 1);
+  if (row.kind === 'occlusion') {
+    const ask = `¿Qué hay bajo la región marcada (${row.cloze_ord ?? 1})?`;
+    return row.front ? `${row.front}\n${ask}` : ask;
+  }
+  return row.front;
+}
+
+/** Media ids a card shows (in its text or as its occlusion image). */
+export function cardImageTexts(card: { front?: string; back?: string; explanation?: string; revealed?: string; occlusion?: { image: string } | null }): string[] {
+  return [card.front, card.back, card.explanation, card.revealed, card.occlusion ? `![](media:${card.occlusion.image})` : undefined].filter(
+    (text): text is string => Boolean(text)
+  );
 }
 
 export function toQuestion(row: CardRow): QuestionCard {
@@ -140,6 +207,9 @@ export function toQuestion(row: CardRow): QuestionCard {
     deck: { id: row.deck_id, name: row.deck_name },
     kind: row.kind ?? 'basic',
     front: questionOf(row),
+    ...(row.kind === 'occlusion' && parseOcclusion(row.occlusion)
+      ? { occlusion: occlusionForQuestion(parseOcclusion(row.occlusion)!, row.cloze_ord ?? 1) }
+      : {}),
     tags: parseTags(row.tags),
     state: row.state,
     reps: row.reps,
@@ -153,9 +223,11 @@ export const REPHRASE_AFTER_REPS = 4;
 
 export function toCard(row: CardRow, settings: StudySettings, now = new Date()): Card {
   const cloze = row.kind === 'cloze';
+  const occlusion = row.kind === 'occlusion' ? parseOcclusion(row.occlusion) : null;
   return {
     ...toQuestion(row),
-    back: answerOf(row),
+    back: answerOf(row) || (occlusion ? row.back : ''),
+    ...(occlusion ? { occlusion: { ...occlusion, ord: row.cloze_ord ?? 1 } } : {}),
     ...(cloze
       ? {
           revealed: clozeRevealed(row.front, row.cloze_ord ?? 1),
@@ -215,12 +287,21 @@ interface SimilarCard {
  * Existing cards of one top-level subject, indexed by word so each new card is
  * only compared with cards that share vocabulary (fast on large collections).
  */
+/** Singular and plural count as the same word ("antídotos" ≈ "antídoto", "nervios" ≈ "nervio"). */
+function stem(word: string): string {
+  if (word.length > 5 && word.endsWith('es') && !/[aeiou]es$/.test(word)) return word.slice(0, -2);
+  if (word.length > 4 && word.endsWith('s')) return word.slice(0, -1);
+  return word;
+}
+
+const stems = (text: string) => new Set(contentWords(text).map(stem));
+
 class SimilarityIndex {
   private cards: SimilarCard[] = [];
   private byWord = new Map<string, number[]>();
 
   add(card: Omit<SimilarCard, 'frontWords' | 'backWords'>) {
-    const indexed: SimilarCard = { ...card, frontWords: new Set(contentWords(card.front)), backWords: new Set(contentWords(card.back)) };
+    const indexed: SimilarCard = { ...card, frontWords: stems(card.front), backWords: stems(card.back) };
     const position = this.cards.push(indexed) - 1;
     for (const word of indexed.frontWords) {
       const list = this.byWord.get(word);
@@ -229,17 +310,38 @@ class SimilarityIndex {
     }
   }
 
+  /** Words that appear in many questions of the subject ("pregunta", "mecanismo"…) say little: they weigh less. */
+  private weight(word: string): number {
+    // A word never seen before weighs like a rare one, not more (one new word must not hide a duplicate).
+    const df = Math.max(1, this.byWord.get(word)?.length ?? 0);
+    return Math.log((this.cards.length + 1) / (df + 1)) + 1;
+  }
+
+  private weightedSimilarity(a: Set<string>, b: Set<string>): number {
+    let shared = 0;
+    let total = 0;
+    for (const word of new Set([...a, ...b])) {
+      const w = this.weight(word);
+      total += w;
+      if (a.has(word) && b.has(word)) shared += w;
+    }
+    return total > 0 ? shared / total : 0;
+  }
+
   /** Near-duplicates (same question and answer) and contradictions (same question, different answer). */
   check(front: string, back: string): string[] {
-    const frontWords = new Set(contentWords(front));
-    const backWords = new Set(contentWords(back));
-    const shared = new Map<number, number>();
-    for (const word of frontWords) for (const position of this.byWord.get(word) ?? []) shared.set(position, (shared.get(position) ?? 0) + 1);
+    const frontWords = stems(front);
+    const backWords = stems(back);
+    // Candidates come from the distinctive words of the question (common ones would match everything).
+    const common = Math.max(50, this.cards.length * 0.1);
+    let keys = [...frontWords].filter((word) => (this.byWord.get(word)?.length ?? 0) <= common);
+    if (keys.length === 0) keys = [...frontWords];
+    const candidates = new Set<number>();
+    for (const word of keys) for (const position of this.byWord.get(word) ?? []) candidates.add(position);
     const issues: string[] = [];
-    for (const [position, count] of shared) {
-      if (count < Math.min(2, frontWords.size)) continue;
+    for (const position of candidates) {
       const other = this.cards[position];
-      if (similarity(frontWords, other.frontWords) < 0.6) continue;
+      if (similarity(frontWords, other.frontWords) < 0.5 || this.weightedSimilarity(frontWords, other.frontWords) < 0.5) continue;
       const sameAnswer =
         similarity(backWords, other.backWords) >= 0.5 || containsLoosely(back, other.back) || containsLoosely(other.back, back);
       issues.push(
@@ -273,7 +375,16 @@ export function addCards(userId: string, input: unknown): AddCardsResult {
 
   for (const [index, card] of cards.entries()) {
     if (!card.deck && !defaultDeck) throw badRequest(`Card ${index} has no deck (set "deck" on the request or the card)`);
-    if (!card.back && !isCloze(card.front)) throw badRequest(`Card ${index} needs a back (answer), or cloze deletions like {{c1::…}} in front`);
+    if (card.occlusion) {
+      card.occlusion.image = resolveMediaRef(userId, card.occlusion.image, index);
+      for (const region of card.occlusion.regions) {
+        const box = region.left !== undefined && region.top !== undefined && region.width !== undefined && region.height !== undefined;
+        if (region.shape === 'polygon' ? !region.points : !box) {
+          throw badRequest(`Card ${index}: every region needs left, top, width and height (0–1), or points for a polygon`);
+        }
+      }
+    } else if (!card.front) throw badRequest(`Card ${index} needs a front`);
+    else if (!card.back && !isCloze(card.front)) throw badRequest(`Card ${index} needs a back (answer), or cloze deletions like {{c1::…}} in front`);
     if (card.documentPart !== undefined && (!document || card.documentPart >= document.parts)) {
       throw badRequest(`Card ${index} has an invalid documentPart`);
     }
@@ -282,8 +393,8 @@ export function addCards(userId: string, input: unknown): AddCardsResult {
   const result: AddCardsResult = { created: [], skipped: [], warnings: [], decksCreated: [], status, dryRun: Boolean(dryRun) };
   const insert = db.prepare(`
     INSERT INTO cards (id, user_id, deck_id, front, back, explanation, source, excerpt, tags, state, due_at, status, document_id, document_part,
-      kind, cloze_ord, note_id, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      kind, cloze_ord, note_id, occlusion, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const partRow = db.prepare(`SELECT label, text FROM document_parts WHERE document_id = ? AND idx = ?`);
 
@@ -315,12 +426,17 @@ export function addCards(userId: string, input: unknown): AddCardsResult {
       let map = fronts.get(deckId);
       if (!map) {
         map = new Map();
-        const rows = db.prepare(`SELECT id, front, cloze_ord FROM cards WHERE deck_id = ?`).all(deckId) as Array<{
+        const rows = db.prepare(`SELECT id, front, cloze_ord, kind, occlusion FROM cards WHERE deck_id = ?`).all(deckId) as Array<{
           id: string;
           front: string;
           cloze_ord: number | null;
+          kind: CardKind;
+          occlusion: string | null;
         }>;
-        for (const row of rows) map.set(frontKey(row.front, row.cloze_ord), row.id);
+        for (const row of rows) {
+          const text = row.kind === 'occlusion' ? `${row.front}|occlusion:${parseOcclusion(row.occlusion)?.image}` : row.front;
+          map.set(frontKey(text, row.cloze_ord), row.id);
+        }
         fronts.set(deckId, map);
       }
       return map;
@@ -330,9 +446,26 @@ export function addCards(userId: string, input: unknown): AddCardsResult {
       const { deck, created } = getOrCreateDeck(userId, card.deck ?? defaultDeck!);
       if (created) result.decksCreated.push(deck.name);
       const existing = frontsFor(deck.id);
-      const kind: CardKind = isCloze(card.front) ? 'cloze' : 'basic';
-      const ords = kind === 'cloze' ? clozeOrdinals(card.front) : [null];
-      const noteId = kind === 'cloze' ? genId() : null;
+      const occlusion: Occlusion | null = card.occlusion
+        ? {
+            image: card.occlusion.image,
+            hideAll: card.occlusion.hideAll ?? true,
+            shapes: card.occlusion.regions.map(
+              (region, i): OcclusionShape => ({
+                ord: region.group ?? i + 1,
+                shape: region.shape ?? 'rect',
+                ...(region.shape === 'polygon'
+                  ? { points: region.points }
+                  : { left: region.left, top: region.top, width: region.width, height: region.height }),
+                ...(region.label ? { label: region.label } : {}),
+              })
+            ),
+          }
+        : null;
+      const kind: CardKind = occlusion ? 'occlusion' : isCloze(card.front) ? 'cloze' : 'basic';
+      const ords = occlusion ? occlusionOrdinals(occlusion) : kind === 'cloze' ? clozeOrdinals(card.front) : [null];
+      const noteId = kind === 'basic' ? null : genId();
+      const keyText = occlusion ? `${card.front}|occlusion:${occlusion.image}` : card.front;
       const part =
         document && card.documentPart !== undefined
           ? (partRow.get(document.id, card.documentPart) as { label: string; text: string } | undefined)
@@ -340,9 +473,13 @@ export function addCards(userId: string, input: unknown): AddCardsResult {
       const source = card.source ?? (document ? [document.title, part?.label].filter(Boolean).join(', ') : '');
       const plain = kind === 'cloze' ? clozePlain(card.front) : card.front;
       const issues =
-        kind === 'cloze'
-          ? [...checkClozeQuality(card.front), ...indexFor(deck.name).check(plain, plain)]
-          : [...checkCardQuality({ front: card.front, back: card.back ?? '' }), ...indexFor(deck.name).check(card.front, card.back ?? '')];
+        kind === 'occlusion'
+          ? occlusion!.shapes.some((shape) => !shape.label)
+            ? ['Some regions have no label: add the name of each structure so answers can be checked.']
+            : []
+          : kind === 'cloze'
+            ? [...checkClozeQuality(card.front), ...indexFor(deck.name).check(plain, plain)]
+            : [...checkCardQuality({ front: card.front, back: card.back ?? '' }), ...indexFor(deck.name).check(card.front, card.back ?? '')];
       if (document && card.excerpt && part && !containsLoosely(part.text, card.excerpt)) {
         issues.push(`The excerpt was not found in ${part.label} of "${document.title}"; quote the source text exactly.`);
       }
@@ -350,7 +487,7 @@ export function addCards(userId: string, input: unknown): AddCardsResult {
 
       let firstId: string | null = null;
       for (const ord of ords) {
-        const key = frontKey(card.front, ord);
+        const key = frontKey(keyText, ord);
         const duplicateOf = existing.get(key);
         if (duplicateOf && !allowDuplicates) {
           result.skipped.push({ index, front: card.front, reason: 'duplicate front in deck', existingCardId: duplicateOf });
@@ -376,14 +513,15 @@ export function addCards(userId: string, input: unknown): AddCardsResult {
           kind,
           ord,
           noteId,
+          occlusion ? JSON.stringify(occlusion) : null,
           createdAt,
           createdAt
         );
         existing.set(key, id);
         firstId ??= id;
-        result.created.push({ id, deck: deck.name, front: ord === null ? card.front : clozeQuestion(card.front, ord) });
+        result.created.push({ id, deck: deck.name, front: ord === null ? card.front : questionOf({ front: card.front, kind, cloze_ord: ord }) });
       }
-      if (firstId) indexFor(deck.name).add({ id: firstId, front: plain, back: kind === 'cloze' ? plain : card.back ?? '' });
+      if (firstId && kind !== 'occlusion') indexFor(deck.name).add({ id: firstId, front: plain, back: kind === 'cloze' ? plain : card.back ?? '' });
       if (issues.length > 0 && firstId) result.warnings.push({ index, cardId: dryRun ? null : firstId, front: card.front, issues });
     }
     if (dryRun) throw new DryRunRollback();
@@ -463,7 +601,15 @@ export function updateCard(userId: string, id: string, patch: unknown, editSourc
       id,
       userId
     );
-    if (row.kind === 'cloze' || isCloze(after.front)) syncClozeNote(userId, id, after, deck.id, now);
+    if (row.kind === 'occlusion') {
+      // Regions stay; the heading, notes and tags are shared by every card of the image.
+      if (row.note_id) {
+        db.prepare(
+          `UPDATE cards SET front = @front, back = @back, explanation = @explanation, source = @source, excerpt = @excerpt, tags = @tags,
+             deck_id = @deckId, updated_at = @now WHERE note_id = @noteId AND user_id = @userId AND id != @id`
+        ).run({ ...after, tags: JSON.stringify(after.tags), deckId: deck.id, now, noteId: row.note_id, userId, id });
+      }
+    } else if (row.kind === 'cloze' || isCloze(after.front)) syncClozeNote(userId, id, after, deck.id, now);
     if (JSON.stringify(before) !== JSON.stringify(after)) {
       db.prepare(
         `INSERT INTO card_revisions (id, user_id, card_id, changed_at, source, reason, before, after) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
