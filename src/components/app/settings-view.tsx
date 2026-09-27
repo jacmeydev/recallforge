@@ -210,49 +210,6 @@ function OptimizeRow({ personalised }: { personalised: boolean }) {
   );
 }
 
-function AnkiSyncRow() {
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState('');
-  return (
-    <div className="space-y-2">
-      <div className="font-medium">Sincronizar con Anki (para estudiar en el móvil)</div>
-      <p className="text-xs text-muted-foreground">
-        Con Anki abierto y el complemento AnkiConnect instalado (código 2055492159): tus tarjetas nuevas y editadas pasan a Anki (y de ahí a
-        AnkiDroid/AnkiMobile al sincronizar con AnkiWeb), y los repasos que hagas allí vuelven aquí. No se borra nada.
-      </p>
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={busy}
-          onClick={async () => {
-            setBusy(true);
-            setMessage('');
-            try {
-              const r = await api<{ notesAdded: number; notesUpdated: number; reviewsPulled: number; warnings: string[] }>('/api/v1/anki/sync', {
-                method: 'POST',
-                body: {},
-              });
-              setMessage(
-                `${r.notesAdded} notas enviadas, ${r.notesUpdated} actualizadas, ${r.reviewsPulled} repasos traídos de Anki.` +
-                  (r.warnings.length ? ` ${r.warnings.join(' ')}` : '')
-              );
-            } catch (err) {
-              const text = err instanceof Error ? err.message : 'Error';
-              setMessage(/not reachable/.test(text) ? 'No encuentro Anki: ábrelo con el complemento AnkiConnect instalado y vuelve a intentarlo.' : text);
-            } finally {
-              setBusy(false);
-            }
-          }}
-        >
-          {busy ? 'Sincronizando…' : 'Sincronizar ahora'}
-        </Button>
-        {message && <span className="text-xs text-muted-foreground">{message}</span>}
-      </div>
-    </div>
-  );
-}
-
 function DataCard({ databasePath }: { databasePath: string }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState('');
@@ -290,7 +247,6 @@ function DataCard({ databasePath }: { databasePath: string }) {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5 text-sm">
-        <AnkiSyncRow />
         <div className="space-y-2">
           <div className="font-medium">Exportar</div>
           <div className="flex flex-wrap gap-2">

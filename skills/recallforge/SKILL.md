@@ -74,10 +74,6 @@ Pass the same `mode`/`format` to `study/next` and `study/grade`.
 - Occlusion cards (anatomy, histology, radiology): `POST /api/v1/cards` with `{"deck":"Anatomía","cards":[{"front":"Plexo braquial","occlusion":{"image":"media:ID","regions":[{"label":"Nervio axilar","left":0.1,"top":0.2,"width":0.15,"height":0.08}],"hideAll":true}}]}` — coordinates are fractions of the image (0–1), one card per region (same `group` = asked together). Always label every region.
 - Documents keep their figures: `read` returns `images` per part (`markdown` to use in a card or as an occlusion image). The learner can also draw occlusions in the web app (deck page, or "Crear oclusión" next to a document figure).
 
-## Sync with Anki
-
-`POST /api/v1/anki/sync` (Anki desktop open with AnkiConnect) sends new and edited cards to Anki (then to AnkiDroid/AnkiMobile via AnkiWeb) and brings back reviews made in Anki. Cards imported from Anki are linked, never duplicated.
-
 ## Anki decks
 
 - Import: `curl -F file=@deck.apkg -F deck=Medicina "$RECALLFORGE_URL/api/v1/import"` (cloze, images, tags, suspended cards, scheduling and review history; re-importing only adds what is new). Large decks: `node dist/cli.mjs import deck.apkg`.

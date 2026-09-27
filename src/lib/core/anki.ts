@@ -386,12 +386,6 @@ async function importCollection(
       0, @scheduledDays, @reps, @lapses, 0, @lastReviewAt, @suspended, @status, @kind, @clozeOrd, @noteId, @externalId, @occlusion,
       @createdAt, @createdAt)`);
   const idByAnkiCard = new Map<number, { id: string; state: CardState }>();
-  // Remember which Anki note/card each imported card is, so syncing with Anki later
-  // links them instead of creating duplicates (and pulls their reviews).
-  const linkAnki = db.prepare(
-    `INSERT OR IGNORE INTO anki_links (card_id, user_id, anki_note_id, anki_card_id, content_hash, last_review_id, synced_at)
-     VALUES (?, ?, ?, ?, '', ?, ?)`
-  );
   let occlusions = 0;
   let empty = 0;
 
@@ -524,7 +518,6 @@ async function importCollection(
         createdAt: new Date(now.getTime() - (cards.length - position)).toISOString(),
       });
       idByAnkiCard.set(card.id, { id, state });
-      linkAnki.run(id, userId, note.id, card.id, lastMs ?? 0, now.toISOString());
       result.cards++;
     });
 

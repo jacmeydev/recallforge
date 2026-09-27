@@ -19,7 +19,6 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { backupDatabase, closeDb, resolveDatabasePath } from '@/lib/core/db';
 import { exportCardsTsv, exportUserData } from '@/lib/core/export';
 import { exportApkg, importApkg } from '@/lib/core/anki';
-import { syncWithAnki } from '@/lib/core/anki-sync';
 import { importData } from '@/lib/core/import';
 import { optimizeScheduler } from '@/lib/core/optimizer';
 import { getStats } from '@/lib/core/stats';
@@ -47,8 +46,6 @@ Uso:
   recallforge backup [carpeta] Copia de la base de datos (por defecto ~/.recallforge/backups)
   recallforge import <archivo> [--deck Materia] [--draft]
                                Importa un mazo de Anki (.apkg), una copia JSON o tarjetas CSV/TSV
-  recallforge sync-anki [--deck Materia]
-                              Sincroniza con Anki abierto (AnkiConnect): envía tarjetas y trae tus repasos
   recallforge optimize        Ajusta FSRS a tu propio historial de repasos
   recallforge remind [--install HH:MM | --uninstall]
                               Aviso en el escritorio con lo pendiente de hoy (y programarlo cada día)
@@ -170,16 +167,6 @@ async function main(): Promise<void> {
           (result.skipped ? ` · ${result.skipped} omitidos (ya existían o duplicados)` : '')
       );
       for (const warning of result.warnings.slice(0, 10)) console.error(`  · ${warning}`);
-      return;
-    }
-    case 'sync-anki': {
-      const flag = (name: string) => (args.indexOf(name) >= 0 ? args[args.indexOf(name) + 1] : undefined);
-      const result = await syncWithAnki(getLocalUser().id, { deck: flag('--deck'), url: flag('--url'), key: flag('--key') });
-      console.log(
-        `Anki: ${result.notesAdded} notas nuevas, ${result.notesUpdated} actualizadas, ${result.reviewsPulled} repasos traídos de Anki` +
-          (result.mediaStored ? `, ${result.mediaStored} imágenes` : '')
-      );
-      for (const warning of result.warnings) console.error(`  · ${warning}`);
       return;
     }
     case 'remind': {
