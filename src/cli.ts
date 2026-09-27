@@ -25,6 +25,7 @@ import { optimizeScheduler } from '@/lib/core/optimizer';
 import { getStats } from '@/lib/core/stats';
 import { getLocalUser } from '@/lib/core/users';
 import { createMcpServer } from '@/lib/mcp/server';
+import { installReminder, notify, reminderText, uninstallReminder } from '@/lib/reminder';
 
 // Node flags its built-in SQLite and WASI (used by the scheduler optimizer) as experimental; that
 // notice is noise for learners, so it is not printed. Other warnings still are.
@@ -49,6 +50,8 @@ Uso:
   recallforge sync-anki [--deck Materia]
                               Sincroniza con Anki abierto (AnkiConnect): envía tarjetas y trae tus repasos
   recallforge optimize        Ajusta FSRS a tu propio historial de repasos
+  recallforge remind [--install HH:MM | --uninstall]
+                              Aviso en el escritorio con lo pendiente de hoy (y programarlo cada día)
   recallforge path            Muestra dónde están tus datos
 
 Ejemplo (Claude Code):
@@ -177,6 +180,24 @@ async function main(): Promise<void> {
           (result.mediaStored ? `, ${result.mediaStored} imágenes` : '')
       );
       for (const warning of result.warnings) console.error(`  · ${warning}`);
+      return;
+    }
+    case 'remind': {
+      if (args.includes('--install')) {
+        const at = args[args.indexOf('--install') + 1];
+        console.log(installReminder(path.resolve(process.argv[1]), at && /^\d{1,2}:\d{2}$/.test(at) ? at : undefined));
+        return;
+      }
+      if (args.includes('--uninstall')) {
+        console.log(uninstallReminder());
+        return;
+      }
+      const text = reminderText();
+      if (!text) {
+        console.log('Nada pendiente hoy.');
+        return;
+      }
+      if (!notify('RecallForge', text)) console.log(text);
       return;
     }
     case 'optimize': {

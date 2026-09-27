@@ -724,6 +724,25 @@ export function createMcpServer(user: AuthUser): McpServer {
   );
 
   server.registerPrompt(
+    'plan_today',
+    {
+      title: 'Plan for today',
+      description: 'What to study today, how long it takes and what is at risk (good for a scheduled morning task)',
+    },
+    () => ({
+      messages: [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text: 'Con RecallForge (get_progress_map), dime en 3-4 líneas qué tengo que estudiar hoy, cuánto tiempo me llevará y qué está en riesgo (exámenes cercanos, tarjetas que olvido). Termina ofreciendo empezar la sesión con study.',
+          },
+        },
+      ],
+    })
+  );
+
+  server.registerPrompt(
     'make_cards',
     {
       title: 'Make flashcards',

@@ -287,12 +287,21 @@ interface SimilarCard {
  * Existing cards of one top-level subject, indexed by word so each new card is
  * only compared with cards that share vocabulary (fast on large collections).
  */
+/** Singular and plural count as the same word ("antídotos" ≈ "antídoto", "nervios" ≈ "nervio"). */
+function stem(word: string): string {
+  if (word.length > 5 && word.endsWith('es') && !/[aeiou]es$/.test(word)) return word.slice(0, -2);
+  if (word.length > 4 && word.endsWith('s')) return word.slice(0, -1);
+  return word;
+}
+
+const stems = (text: string) => new Set(contentWords(text).map(stem));
+
 class SimilarityIndex {
   private cards: SimilarCard[] = [];
   private byWord = new Map<string, number[]>();
 
   add(card: Omit<SimilarCard, 'frontWords' | 'backWords'>) {
-    const indexed: SimilarCard = { ...card, frontWords: new Set(contentWords(card.front)), backWords: new Set(contentWords(card.back)) };
+    const indexed: SimilarCard = { ...card, frontWords: stems(card.front), backWords: stems(card.back) };
     const position = this.cards.push(indexed) - 1;
     for (const word of indexed.frontWords) {
       const list = this.byWord.get(word);
@@ -301,17 +310,38 @@ class SimilarityIndex {
     }
   }
 
+  /** Words that appear in many questions of the subject ("pregunta", "mecanismo"…) say little: they weigh less. */
+  private weight(word: string): number {
+    // A word never seen before weighs like a rare one, not more (one new word must not hide a duplicate).
+    const df = Math.max(1, this.byWord.get(word)?.length ?? 0);
+    return Math.log((this.cards.length + 1) / (df + 1)) + 1;
+  }
+
+  private weightedSimilarity(a: Set<string>, b: Set<string>): number {
+    let shared = 0;
+    let total = 0;
+    for (const word of new Set([...a, ...b])) {
+      const w = this.weight(word);
+      total += w;
+      if (a.has(word) && b.has(word)) shared += w;
+    }
+    return total > 0 ? shared / total : 0;
+  }
+
   /** Near-duplicates (same question and answer) and contradictions (same question, different answer). */
   check(front: string, back: string): string[] {
-    const frontWords = new Set(contentWords(front));
-    const backWords = new Set(contentWords(back));
-    const shared = new Map<number, number>();
-    for (const word of frontWords) for (const position of this.byWord.get(word) ?? []) shared.set(position, (shared.get(position) ?? 0) + 1);
+    const frontWords = stems(front);
+    const backWords = stems(back);
+    // Candidates come from the distinctive words of the question (common ones would match everything).
+    const common = Math.max(50, this.cards.length * 0.1);
+    let keys = [...frontWords].filter((word) => (this.byWord.get(word)?.length ?? 0) <= common);
+    if (keys.length === 0) keys = [...frontWords];
+    const candidates = new Set<number>();
+    for (const word of keys) for (const position of this.byWord.get(word) ?? []) candidates.add(position);
     const issues: string[] = [];
-    for (const [position, count] of shared) {
-      if (count < Math.min(2, frontWords.size)) continue;
+    for (const position of candidates) {
       const other = this.cards[position];
-      if (similarity(frontWords, other.frontWords) < 0.6) continue;
+      if (similarity(frontWords, other.frontWords) < 0.5 || this.weightedSimilarity(frontWords, other.frontWords) < 0.5) continue;
       const sameAnswer =
         similarity(backWords, other.backWords) >= 0.5 || containsLoosely(back, other.back) || containsLoosely(other.back, back);
       issues.push(

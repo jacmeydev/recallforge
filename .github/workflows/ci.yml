@@ -35,6 +35,12 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Run tests with Node's built-in SQLite (used by the Claude Desktop extension)
+        if: matrix.node-version == 22
+        run: npm test
+        env:
+          RECALLFORGE_SQLITE: node
+
       - name: Chat widget is up to date
         run: npm run build:widget && git diff --exit-code src/lib/mcp/widget.generated.ts
 

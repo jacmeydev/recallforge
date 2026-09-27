@@ -313,3 +313,29 @@ describe('figures in documents', () => {
     expect(blocks[1]).toMatchObject({ type: 'image', mimeType: 'image/png' });
   });
 });
+
+describe('duplicate detection', () => {
+  it('ignores shared boilerplate, catches singular/plural variants and stays fast', async () => {
+    const { user } = await createTestUser();
+    const subjects = ['anatomía', 'fisiología', 'farmacología', 'microbiología', 'patología', 'bioquímica', 'histología', 'genética'];
+    addCards(user.id, {
+      deck: 'Medicina',
+      cards: subjects.flatMap((subject, i) =>
+        Array.from({ length: 30 }, (_, j) => ({ front: `Pregunta clínica sobre el mecanismo de ${subject} ${String.fromCharCode(97 + j)}${i}`, back: `Respuesta ${i}-${j}` }))
+      ),
+    });
+    addCards(user.id, { deck: 'Medicina', cards: [{ front: 'Antídoto de la intoxicación por heparina', back: 'Protamina' }] });
+    const check = addCards(user.id, {
+      deck: 'Medicina',
+      dryRun: true,
+      cards: [
+        { front: 'Pregunta clínica sobre el mecanismo de embriología', back: 'Otra cosa' },
+        { front: 'Antídotos de las intoxicaciones por heparina', back: 'Sulfato de protamina' },
+        { front: 'Antídoto para una intoxicación por heparina', back: 'Vitamina K' },
+      ],
+    });
+    expect(check.warnings.find((w) => w.index === 0)).toBeUndefined();
+    expect(check.warnings.find((w) => w.index === 1)?.issues.join()).toMatch(/Near-duplicate/);
+    expect(check.warnings.find((w) => w.index === 2)?.issues.join()).toMatch(/contradiction/);
+  });
+});

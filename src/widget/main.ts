@@ -194,6 +194,9 @@ const judgeTyped = () =>
 
 async function reportToModel() {
   const lines = [
+    state.view === 'progress'
+      ? 'The learner sees the RecallForge progress map in the chat (interactive widget).'
+      : 'The learner is studying in the RecallForge widget shown in the chat: do not ask the cards in chat; answer only what they ask (Explícame, Mejorar tarjeta…).',
     `RecallForge study widget — ${state.reviewed} answered, ${state.correct} right${isPractice() ? ' (practice, schedule unchanged)' : ''}.`,
     state.failed.length ? `Failed: ${state.failed.slice(-10).map((f) => `"${f.front}" → "${f.back}" (${f.id})`).join('; ')}` : '',
   ].filter(Boolean);
@@ -510,6 +513,8 @@ app.ontoolresult = (params) => {
     showNext(data.next, data.images);
   }
   render();
+  // Tell the agent the widget is really on screen (it cannot know otherwise, e.g. over HTTP).
+  void reportToModel();
 };
 app.onhostcontextchanged = (ctx) => applyContext(ctx as McpUiHostContext);
 

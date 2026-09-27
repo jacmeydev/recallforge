@@ -265,7 +265,7 @@ describe('MCP endpoint', () => {
       'widget_undo',
     ]);
     const prompts = (await rpc('prompts/list')).body.result.prompts.map((p: { name: string }) => p.name).sort();
-    expect(prompts).toEqual(['make_cards', 'study']);
+    expect(prompts).toEqual(['make_cards', 'plan_today', 'study']);
   });
 
   it('lets an agent create cards and run a study session end to end', async () => {
