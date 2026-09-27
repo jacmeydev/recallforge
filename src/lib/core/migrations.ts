@@ -5,10 +5,10 @@
 // recorded in schema_migrations.
 // ============================================================================
 
-import type Database from 'better-sqlite3';
+import type { SqliteDatabase } from './sqlite';
 import { archiveLegacyTables, convertLegacyData, hasLegacySchema } from './legacy';
 
-type DB = Database.Database;
+type DB = SqliteDatabase;
 
 interface Migration {
   id: string;

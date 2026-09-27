@@ -41,5 +41,13 @@ jobs:
       - name: Build (web + CLI)
         run: npm run build
 
+      - name: Claude Desktop extension and npm package start and answer
+        if: matrix.node-version == 22
+        run: |
+          npm run build:mcpb
+          mkdir -p /tmp/ext && cd /tmp/ext && unzip -q "$GITHUB_WORKSPACE/dist/recallforge.mcpb"
+          RECALLFORGE_DIR=/tmp/ext-data node --no-warnings server/index.mjs import "$GITHUB_WORKSPACE/tests/data/anki-modern.apkg"
+          RECALLFORGE_DIR=/tmp/ext-data node --no-warnings server/index.mjs stats
+
       - name: CLI smoke test
         run: node dist/cli.mjs path

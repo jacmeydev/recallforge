@@ -8,10 +8,10 @@
 // Image-occlusion cards cannot be represented as text and are skipped.
 // ============================================================================
 
-import type Database from 'better-sqlite3';
+import type { SqliteDatabase } from './sqlite';
 import { htmlToText } from './text';
 
-type DB = Database.Database;
+type DB = SqliteDatabase;
 
 const LEGACY_TABLES = [
   'sessions',

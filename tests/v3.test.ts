@@ -184,6 +184,13 @@ describe('MCP Apps (study widget in the chat)', () => {
     expect((progress.structuredContent as { view: string }).view).toBe('progress');
   });
 
+  it('lets agents create cloze cards without a back', async () => {
+    const { client } = await connect();
+    const res = await client.callTool({ name: 'add_cards', arguments: { deck: 'Cardio', cards: [{ front: 'El {{c1::nodo sinusal}} marca el {{c2::ritmo}}' }] } });
+    expect(res.isError).toBeFalsy();
+    expect(JSON.parse((res.content as Array<{ text: string }>)[0].text).created).toHaveLength(2);
+  });
+
   it('sends card images to agents that can see them', async () => {
     const { client, user } = await connect();
     const media = saveMedia(user.id, { filename: 'ecg.png', data: PNG });

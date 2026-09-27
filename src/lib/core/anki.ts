@@ -15,13 +15,13 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import zlib from 'zlib';
-import Database from 'better-sqlite3';
 import JSZip from 'jszip';
 import yauzl from 'yauzl';
 import { decompress as fzstdDecompress } from 'fzstd';
 import { normalizeTags } from './cards';
 import { clozeOrdinals } from './cloze';
 import { genId, getDb } from './db';
+import { openSqlite, type SqliteDatabase } from './sqlite';
 import { deckScopeSql, getOrCreateDeck, normalizeDeckPath } from './decks';
 import { badRequest } from './errors';
 import { getMedia, MEDIA_REF, saveMedia } from './media';
@@ -246,7 +246,7 @@ export async function importApkg(userId: string, file: string, options: AnkiImpo
       }
     }
     // Media files are read up front (only those referenced by notes), then the import is one transaction.
-    const anki = new Database(dbFile, { readonly: true });
+    const anki = openSqlite(dbFile, { readonly: true });
     try {
       return await importCollection(userId, anki, { zip, modern, mediaEntry }, options);
     } finally {
@@ -260,7 +260,7 @@ export async function importApkg(userId: string, file: string, options: AnkiImpo
 
 async function importCollection(
   userId: string,
-  anki: Database.Database,
+  anki: SqliteDatabase,
   media: { zip: ZipReader; modern: boolean; mediaEntry: Map<string, string> },
   options: AnkiImportOptions
 ): Promise<ImportResult> {
@@ -612,7 +612,7 @@ export async function exportApkg(userId: string, options: { deck?: string } = {}
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'recallforge-export-'));
   try {
     const file = path.join(tmp, 'collection.anki2');
-    const out = new Database(file);
+    const out = openSqlite(file);
     const crt = Math.floor(new Date('2020-01-01T04:00:00Z').getTime() / 1000);
     const nowSec = Math.floor(Date.now() / 1000);
     const today = Math.floor((Date.now() / 1000 - crt) / 86400);

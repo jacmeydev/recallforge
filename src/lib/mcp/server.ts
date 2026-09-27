@@ -133,8 +133,8 @@ const questionFormat = z
   .describe('recall/typing move the schedule; multiple_choice/true_false are practice (checked, logged, schedule unchanged)');
 
 const cardShape = {
-  front: z.string().describe('Question or prompt shown to the learner'),
-  back: z.string().describe('Concise expected answer'),
+  front: z.string().describe('Question shown to the learner, or a cloze text: "La {{c1::protamina}} revierte la {{c2::heparina}}" (one card per cN)'),
+  back: z.string().optional().describe('Concise expected answer. Optional for cloze cards (front with {{c1::…}}), where it holds extra notes'),
   explanation: z.string().optional().describe('Context, reasoning, mnemonic or clinical relevance used for feedback'),
   source: z.string().optional().describe('Reference: book, chapter, page, lecture, URL'),
   excerpt: z.string().optional().describe('Exact sentence(s) of the source this card is based on, copied verbatim'),

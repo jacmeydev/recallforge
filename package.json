@@ -1,6 +1,6 @@
 {
   "name": "recallforge",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "Spaced-repetition memory (FSRS) that any AI agent can use for active-recall study, via MCP or REST",
   "scripts": {
     "dev": "next dev --webpack -H 127.0.0.1 --port 3030",
@@ -13,7 +13,8 @@
     "lint": "eslint . --max-warnings=0",
     "test": "vitest run",
     "test:watch": "vitest",
-    "build:widget": "node scripts/build-widget.mjs"
+    "build:widget": "node scripts/build-widget.mjs",
+    "build:mcpb": "node scripts/build-mcpb.mjs"
   },
   "keywords": [],
   "author": "",
