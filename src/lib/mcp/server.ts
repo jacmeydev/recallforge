@@ -17,7 +17,6 @@ import { deleteDocument, getDocument, importDocumentFile, importDocumentText, li
 import { AppError } from '@/lib/core/errors';
 import { explainCard } from '@/lib/core/explain';
 import { exportApkg, importApkg } from '@/lib/core/anki';
-import { syncWithAnki } from '@/lib/core/anki-sync';
 import { exportCardsTsv, exportUserData } from '@/lib/core/export';
 import { importData } from '@/lib/core/import';
 import { optimizeScheduler } from '@/lib/core/optimizer';
@@ -522,22 +521,6 @@ export function createMcpServer(user: AuthUser): McpServer {
       },
     },
     ({ content_base64, filename }) => run(() => ({ media: saveMedia(user.id, { filename, data: new Uint8Array(Buffer.from(content_base64, 'base64')) }) }))
-  );
-
-  server.registerTool(
-    'sync_anki',
-    {
-      title: 'Sync with Anki',
-      description:
-        "Two-way sync with the learner's Anki desktop (needs Anki open with the AnkiConnect add-on, code 2055492159): new and edited RecallForge cards go to Anki (to study on the phone after Anki syncs with AnkiWeb), and reviews made in Anki come back here so the schedule and progress include them. Nothing is deleted. Cards imported from Anki are not sent back.",
-      inputSchema: {
-        deck: z.string().optional().describe('Only this subject'),
-        url: z.string().optional().describe('AnkiConnect address (default http://127.0.0.1:8765)'),
-        key: z.string().optional().describe('AnkiConnect API key, if the learner set one'),
-        dry_run: z.boolean().optional().describe('Only report what would change'),
-      },
-    },
-    ({ deck, url, key, dry_run }) => run(() => syncWithAnki(user.id, { deck, url, key, dryRun: dry_run }))
   );
 
   server.registerTool(

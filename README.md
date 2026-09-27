@@ -23,7 +23,6 @@ Le dices a tu agente (Claude, ChatGPT, Codex, Cursor, VS Code…) «vamos a repa
 - [Trae tus mazos de Anki](#trae-tus-mazos-de-anki)
 - [Cloze e imágenes](#cloze-e-imágenes)
 - [Oclusión de imagen](#oclusión-de-imagen)
-- [Sincronizar con Anki y el móvil](#sincronizar-con-anki-y-el-móvil)
 - [Recordatorio diario](#recordatorio-diario)
 - [De tus documentos a tarjetas](#de-tus-documentos-a-tarjetas)
 - [Organización por materias](#organización-por-materias)
@@ -183,21 +182,6 @@ La forma de estudiar anatomía, histología y radiología: una imagen con las es
 
 Las **figuras de tus documentos** también sirven: al subir un PDF, un PowerPoint o un Word, RecallForge extrae sus imágenes (descarta iconos y logotipos) y las asocia a su página, diapositiva o sección. En la web, cada figura tiene un botón *Crear oclusión*; el agente las ve con `get_image` y puede convertir un esquema en tarjetas de oclusión o de imagen.
 
-## Sincronizar con Anki y el móvil
-
-Con Anki de escritorio abierto y el complemento **AnkiConnect** (código `2055492159`):
-
-```bash
-node dist/cli.mjs sync-anki          # o el botón «Sincronizar ahora» en la web, o pídeselo al agente (sync_anki)
-```
-
-- Tus tarjetas nuevas y editadas pasan a Anki, en la misma materia, con imágenes, cloze y oclusión. Cuando Anki se sincroniza con AnkiWeb, las tienes en **AnkiDroid y AnkiMobile**.
-- Los repasos que hagas en Anki (en el móvil o en el ordenador) vuelven a RecallForge y se aplican en orden, así que tu programación, tus estadísticas y tu mapa de progreso los incluyen.
-- Las tarjetas que importaste de Anki quedan enlazadas con las originales: no se duplican.
-- No se borra nada en ningún lado.
-
-Sin AnkiConnect también puedes exportar un `.apkg` (más abajo) y abrirlo en el móvil.
-
 ## Recordatorio diario
 
 ```bash
@@ -321,7 +305,6 @@ La IA propone; tú decides.
 | `export_data` | Escribe un `.apkg` (Anki, AnkiDroid, AnkiMobile), la copia JSON completa o un TSV. |
 | `add_image` | Guarda una imagen y devuelve el texto para ponerla en una tarjeta. |
 | `get_image` | Deja al agente ver una imagen (una figura de un documento o la de una tarjeta). |
-| `sync_anki` | Sincroniza con Anki abierto (AnkiConnect): envía tarjetas y trae los repasos hechos allí. |
 | `optimize_scheduler` | Ajusta FSRS a tu historial de repasos. |
 | `list_decks`, `update_deck`, `delete_deck` | Árbol de materias; renombrar, mover, poner fecha de examen o borrar. |
 | `update_settings` | Nuevas por día, repasos por día, retención objetivo, zona horaria. |
@@ -374,7 +357,6 @@ Disponible mientras la web local está abierta (`http://127.0.0.1:3030`). En loc
 | POST | `/api/v1/import` | Importar `.apkg`, JSON de RecallForge o CSV/TSV (`multipart` con `file`, `deck?`, `draft?`, o el texto tal cual) |
 | POST, GET | `/api/v1/media`, `/api/v1/media/{id}` | Subir una imagen (`multipart` con `file`) / descargarla |
 | POST | `/api/v1/settings/optimize` | Ajustar FSRS a tu historial (`{ apply? }`) |
-| POST | `/api/v1/anki/sync` | Sincronizar con Anki (`{ deck?, url?, key?, dryRun? }`) |
 
 ```bash
 URL=http://127.0.0.1:3030
@@ -472,7 +454,7 @@ Tecnologías: Node.js, TypeScript, SQLite (better-sqlite3), ts-fsrs, MCP TypeScr
 | «Explícame esto» | Botón en cada tarjeta (web) y `explain_card` (agente). |
 | Examen separado del repaso espaciado | Cola propia sin límites diarios; la práctica de opción múltiple y V/F no toca la programación. |
 
-**Limitaciones conocidas**: RecallForge no incluye una IA propia, así que la calificación semántica, las explicaciones a fondo, la reformulación y la lectura de escaneos o vídeos las hace tu agente; en la web sin agente te autoevalúas tú. En el móvil se estudia con AnkiDroid/AnkiMobile (sincronizando con Anki o con un `.apkg`) o con el chat de tu agente si lo conectas por [acceso remoto](DEPLOYMENT.md). Las notas de oclusión solo pasan a Anki por AnkiConnect cuando tu Anki ya tiene su tipo de nota de oclusión (se crea al hacer una oclusión en Anki una vez). La web local no viene en la extensión de Claude Desktop ni en el paquete npm: para ella, instala desde el código.
+**Limitaciones conocidas**: RecallForge no incluye una IA propia, así que la calificación semántica, las explicaciones a fondo, la reformulación y la lectura de escaneos o vídeos las hace tu agente; en la web sin agente te autoevalúas tú. En el móvil se estudia con AnkiDroid/AnkiMobile (exportando un `.apkg`) o con el chat de tu agente si lo conectas por [acceso remoto](DEPLOYMENT.md). La web local no viene en la extensión de Claude Desktop ni en el paquete npm: para ella, instala desde el código.
 
 ## Hoja de ruta
 

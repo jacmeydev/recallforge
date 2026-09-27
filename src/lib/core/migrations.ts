@@ -237,7 +237,7 @@ const MIGRATIONS: Migration[] = [
     },
   },
   {
-    // Link between RecallForge cards and notes/cards in the learner's Anki (AnkiConnect sync).
+    // Link table of the former AnkiConnect sync (3.0.0); dropped by the next migration.
     id: '2026_09_anki_links',
     up(db) {
       db.exec(`
@@ -252,6 +252,13 @@ const MIGRATIONS: Migration[] = [
         );
         CREATE INDEX ix_anki_links_note ON anki_links(anki_note_id);
       `);
+    },
+  },
+  {
+    // AnkiConnect sync was removed: .apkg import/export is the way to and from Anki.
+    id: '2026_09_drop_anki_links',
+    up(db) {
+      db.exec(`DROP TABLE IF EXISTS anki_links;`);
     },
   },
 ];
