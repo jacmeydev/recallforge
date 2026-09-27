@@ -20,13 +20,14 @@ import yauzl from 'yauzl';
 import { decompress as fzstdDecompress } from 'fzstd';
 import { normalizeTags } from './cards';
 import { clozeOrdinals } from './cloze';
+import { imageSize, parseAnkiOcclusion, toAnkiOcclusion } from './occlusion';
 import { genId, getDb } from './db';
 import { openSqlite, type SqliteDatabase } from './sqlite';
 import { deckScopeSql, getOrCreateDeck, normalizeDeckPath } from './decks';
 import { badRequest } from './errors';
 import { getMedia, MEDIA_REF, saveMedia } from './media';
 import type { ImportResult } from './import';
-import type { CardRow, CardState, Rating } from './types';
+import type { CardRow, CardState, Occlusion, Rating } from './types';
 
 // ---------------------------------------------------------------------------
 // Zip access (random access, no need to load a multi-GB deck in memory)
@@ -380,9 +381,10 @@ async function importCollection(
   const insert = db.prepare(`
     INSERT INTO cards (id, user_id, deck_id, front, back, explanation, source, excerpt, tags, state, due_at, stability, difficulty,
       elapsed_days, scheduled_days, reps, lapses, learning_steps, last_review_at, suspended, status, kind, cloze_ord, note_id, external_id,
-      created_at, updated_at)
+      occlusion, created_at, updated_at)
     VALUES (@id, @userId, @deckId, @front, @back, @explanation, @source, '', @tags, @state, @dueAt, @stability, @difficulty,
-      0, @scheduledDays, @reps, @lapses, 0, @lastReviewAt, @suspended, @status, @kind, @clozeOrd, @noteId, @externalId, @createdAt, @createdAt)`);
+      0, @scheduledDays, @reps, @lapses, 0, @lastReviewAt, @suspended, @status, @kind, @clozeOrd, @noteId, @externalId, @occlusion,
+      @createdAt, @createdAt)`);
   const idByAnkiCard = new Map<number, { id: string; state: CardState }>();
   let occlusions = 0;
   let empty = 0;
@@ -404,8 +406,9 @@ async function importCollection(
       let front: string;
       let back: string;
       let explanation = '';
-      let kind: 'basic' | 'cloze' = 'basic';
+      let kind: 'basic' | 'cloze' | 'occlusion' = 'basic';
       let clozeOrd: number | null = null;
+      let occlusion: Occlusion | null = null;
       if (type.cloze) {
         const clozeField = /\{\{(?:[^}]*:)?cloze:([^}]+)\}\}/i.exec(type.templates[0]?.q ?? '')?.[1]?.trim() ?? type.fields[0];
         const source = fields[clozeField] ?? '';
@@ -418,12 +421,31 @@ async function importCollection(
           .join('\n\n')
           .slice(0, 6000);
         if (/image-occlusion:/i.test(source)) {
-          // Native image occlusion: show the image and ask for the hidden region's label.
-          occlusions++;
-          const imageField = type.fields.find((name) => /<img/i.test(fields[name] ?? '')) ?? '';
-          const label = new RegExp(`\\{\\{c${card.ord + 1}::image-occlusion:[^}]*?text=([^:}]+)`, 'i').exec(source)?.[1];
-          front = `${text(fields[imageField] ?? '')}\n¿Qué estructura está oculta en la región ${card.ord + 1}?`;
-          back = label ? label.trim() : back || '(ver la imagen en Anki)';
+          // Native image occlusion: the image, its regions and this card's region.
+          // Stock field order: Occlusion, Image, Header, Back Extra, Comments (names may be translated).
+          const field = (name: string, index: number) => fields[name] ?? values[index] ?? '';
+          const imageName = /<img[^>]*?src\s*=\s*["']?([^"'>\s]+)/i.exec(field('Image', 1))?.[1];
+          let imageId: string | null = null;
+          if (imageName) {
+            let name = imageName;
+            try {
+              name = decodeURIComponent(name);
+            } catch {
+              // keep the raw name
+            }
+            imageId = imageIds.get(decodeEntities(name)) ?? null;
+          }
+          if (!imageId) {
+            occlusions++;
+            return;
+          }
+          const { shapes, hideAll } = parseAnkiOcclusion(source, imageSize(getMedia(userId, imageId).data));
+          occlusion = { image: imageId, shapes, hideAll };
+          kind = 'occlusion';
+          clozeOrd = card.ord + 1;
+          front = text(field('Header', 2));
+          back = text(field('Back Extra', 3));
+          explanation = text(field('Comments', 4));
         } else {
           front = text(source);
           kind = 'cloze';
@@ -490,7 +512,8 @@ async function importCollection(
         status,
         kind,
         clozeOrd,
-        noteId: kind === 'cloze' ? `anki-${note.id}` : null,
+        noteId: kind === 'basic' ? null : `anki-${note.id}`,
+        occlusion: occlusion ? JSON.stringify(occlusion) : null,
         externalId,
         createdAt: new Date(now.getTime() - (cards.length - position)).toISOString(),
       });
@@ -533,7 +556,7 @@ async function importCollection(
     }
   })();
 
-  if (occlusions) result.warnings.push(`${occlusions} image-occlusion cards were imported as "which structure is hidden?" questions with the image.`);
+  if (occlusions) result.warnings.push(`${occlusions} image-occlusion cards were skipped because their image was not in the package.`);
   if (empty) result.warnings.push(`${empty} cards had an empty question and were skipped.`);
   if (result.cards > 0 && result.reviews > 400) {
     result.warnings.push('Tip: your Anki history is large enough to personalise the scheduler — run optimize_scheduler.');
@@ -546,6 +569,52 @@ async function importCollection(
 // ---------------------------------------------------------------------------
 
 const BASIC_MODEL_ID = 1_714_000_000_001;
+const OCCLUSION_MODEL_ID = 1_714_000_000_003;
+
+/** Anki's stock "Image Occlusion" note type (Anki 23.10+), so exported cards render natively. */
+function occlusionModel(deckId: number) {
+  return {
+    id: String(OCCLUSION_MODEL_ID),
+    name: 'Image Occlusion',
+    type: 1,
+    originalStockKind: 6,
+    mod: Math.floor(Date.now() / 1000),
+    usn: -1,
+    sortf: 0,
+    did: deckId,
+    tmpls: [
+      {
+        name: 'Image Occlusion',
+        ord: 0,
+        qfmt: "{{#Header}}<div>{{Header}}</div>{{/Header}}\n<div style=\"display: none\">{{cloze:Occlusion}}</div>\n<div id=\"err\"></div>\n<div id=\"image-occlusion-container\">\n    {{Image}}\n    <canvas id=\"image-occlusion-canvas\"></canvas>\n</div>\n<script>\ntry {\n    anki.imageOcclusion.setup();\n} catch (exc) {\n    document.getElementById(\"err\").innerHTML = `Error loading image occlusion. Is your Anki version up to date?<br><br>${exc}`;\n}\n</script>\n",
+        afmt: "{{#Header}}<div>{{Header}}</div>{{/Header}}\n<div style=\"display: none\">{{cloze:Occlusion}}</div>\n<div id=\"err\"></div>\n<div id=\"image-occlusion-container\">\n    {{Image}}\n    <canvas id=\"image-occlusion-canvas\"></canvas>\n</div>\n<script>\ntry {\n    anki.imageOcclusion.setup();\n} catch (exc) {\n    document.getElementById(\"err\").innerHTML = `Error loading image occlusion. Is your Anki version up to date?<br><br>${exc}`;\n}\n</script>\n\n<div><button id=\"toggle\">Toggle Masks</button></div>\n{{#Back Extra}}<div>{{Back Extra}}</div>{{/Back Extra}}\n",
+        did: null,
+        bqfmt: '',
+        bafmt: '',
+        bfont: '',
+        bsize: 0,
+      },
+    ],
+    flds: ['Occlusion', 'Image', 'Header', 'Back Extra', 'Comments'].map((name, ord) => ({
+      name,
+      ord,
+      tag: ord,
+      preventDeletion: ord < 4,
+      sticky: false,
+      rtl: false,
+      font: 'Arial',
+      size: 20,
+      media: [],
+    })),
+    css: "#image-occlusion-canvas {\n    --inactive-shape-color: #ffeba2;\n    --active-shape-color: #ff8e8e;\n    --inactive-shape-border: 1px #212121;\n    --active-shape-border: 1px #212121;\n    --highlight-shape-color: #ff8e8e00;\n    --highlight-shape-border: 1px #ff8e8e;\n}\n\n.card {\n    font-family: arial;\n    font-size: 20px;\n    text-align: center;\n    color: black;\n    background-color: white;\n}\n",
+    latexPre: '',
+    latexPost: '',
+    latexsvg: false,
+    req: [[0, 'any', [0, 1, 2]]],
+    tags: [],
+    vers: [],
+  };
+}
 const CLOZE_MODEL_ID = 1_714_000_000_002;
 const CSS = `.card { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; font-size: 20px; text-align: center; color: black; background-color: white; }
 .nightMode .card, .night_mode .card { color: #eee; background-color: #1e1e1e; }
@@ -632,7 +701,11 @@ export async function exportApkg(userId: string, options: { deck?: string } = {}
       }
     }
     const firstDeck = deckIds.values().next().value ?? 1;
-    const models = { [BASIC_MODEL_ID]: model(BASIC_MODEL_ID, 'RecallForge Basic', false, firstDeck), [CLOZE_MODEL_ID]: model(CLOZE_MODEL_ID, 'RecallForge Cloze', true, firstDeck) };
+    const models = {
+      [BASIC_MODEL_ID]: model(BASIC_MODEL_ID, 'RecallForge Basic', false, firstDeck),
+      [CLOZE_MODEL_ID]: model(CLOZE_MODEL_ID, 'RecallForge Cloze', true, firstDeck),
+      [OCCLUSION_MODEL_ID]: occlusionModel(firstDeck),
+    };
     out.exec(ANKI_SCHEMA);
     out.prepare(`INSERT INTO col VALUES (1, ?, ?, ?, 11, 0, 0, 0, ?, ?, ?, ?, '{}')`).run(
       crt,
@@ -664,14 +737,24 @@ export async function exportApkg(userId: string, options: { deck?: string } = {}
     let position = 0;
     out.transaction(() => {
       for (const row of rows) {
-        const cloze = row.kind === 'cloze';
+        const occlusion = row.kind === 'occlusion' ? (JSON.parse(row.occlusion ?? 'null') as Occlusion | null) : null;
+        const cloze = row.kind === 'cloze' || Boolean(occlusion);
         const noteKey = cloze && row.note_id ? `note:${row.note_id}` : `card:${row.id}`;
         let nid = notesDone.get(noteKey);
         if (nid === undefined) {
           nid = ankiId(noteKey);
-          const fields = [row.front, row.back, row.explanation, row.source].map((f) => toAnkiHtml(f ?? '', mediaName));
+          const fields = occlusion
+            ? [
+                toAnkiOcclusion(occlusion),
+                `<img src="${mediaName(occlusion.image)}">`,
+                toAnkiHtml(row.front ?? '', mediaName),
+                toAnkiHtml(row.back ?? '', mediaName),
+                toAnkiHtml(row.explanation ?? '', mediaName),
+              ]
+            : [row.front, row.back, row.explanation, row.source].map((f) => toAnkiHtml(f ?? '', mediaName));
           const tags = (JSON.parse(row.tags) as string[]).map((t) => t.replace(/\s+/g, '_'));
-          insertNote.run(nid, noteKey.slice(0, 40), cloze ? CLOZE_MODEL_ID : BASIC_MODEL_ID, nowSec, tags.length ? ` ${tags.join(' ')} ` : '', fields.join('\x1f'), stripHtml(fields[0]), checksum(fields[0]));
+          const mid = occlusion ? OCCLUSION_MODEL_ID : cloze ? CLOZE_MODEL_ID : BASIC_MODEL_ID;
+          insertNote.run(nid, noteKey.slice(0, 40), mid, nowSec, tags.length ? ` ${tags.join(' ')} ` : '', fields.join('\x1f'), stripHtml(fields[0]), checksum(fields[0]));
           notesDone.set(noteKey, nid);
         }
         position++;

@@ -232,6 +232,8 @@ function nextPracticeCard(userId: string, filter: StudyFilter, now: Date): NextC
     params.tag = filter.tag;
   }
   where.push(`NOT EXISTS (SELECT 1 FROM review_logs r WHERE r.card_id = c.id AND r.mode = 'practice' AND r.reviewed_at >= @since)`);
+  // Image occlusion without names has no answer to choose among.
+  where.push(`NOT (c.kind = 'occlusion' AND instr(c.occlusion, '"label"') = 0)`);
   const db = getDb();
   const whereSql = where.join(' AND ');
   const counts = db

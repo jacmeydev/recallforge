@@ -14,6 +14,7 @@ import { getUiCapability, registerAppResource, registerAppTool, RESOURCE_MIME_TY
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
+import { cardImageTexts } from '@/lib/core/cards';
 import { AppError } from '@/lib/core/errors';
 import { mediaPayload } from '@/lib/core/media';
 import { getProgressMap } from '@/lib/core/progress';
@@ -41,7 +42,10 @@ function images(userId: string, texts: Array<string | undefined | null>): Record
 }
 
 function nextWithImages(userId: string, next: NextCardResult) {
-  return { next, images: images(userId, [next.card?.front, ...(next.presentation?.choices ?? []), next.presentation?.statement]) };
+  return {
+    next,
+    images: images(userId, [...(next.card ? cardImageTexts(next.card) : []), ...(next.presentation?.choices ?? []), next.presentation?.statement]),
+  };
 }
 
 function result(structuredContent: Record<string, unknown>, text = 'ok'): CallToolResult {
@@ -137,7 +141,7 @@ export function registerStudyApp(server: McpServer, user: AuthUser): void {
       run(() => {
         const reveal = revealCard(user.id, card_id);
         const c = reveal.card;
-        return result({ reveal, images: images(user.id, [c.front, c.back, c.revealed, c.cloze?.extra, c.explanation]) });
+        return result({ reveal, images: images(user.id, [...cardImageTexts(c), c.cloze?.extra]) });
       })
   );
 
@@ -195,7 +199,7 @@ export function registerStudyApp(server: McpServer, user: AuthUser): void {
     ({ card_id }: { card_id?: string }) =>
       run(() => {
         const undone = undoLastReview(user.id, card_id);
-        return result({ ...undone, images: images(user.id, [undone.card.front]) });
+        return result({ ...undone, images: images(user.id, cardImageTexts(undone.card)) });
       })
   );
 

@@ -212,6 +212,13 @@ const MIGRATIONS: Migration[] = [
       db.exec(`CREATE INDEX ix_cards_new_order ON cards(user_id, suspended, state, created_at)`);
     },
   },
+  {
+    // Image occlusion cards: the image, its regions and which region each card hides (JSON).
+    id: '2026_09_image_occlusion',
+    up(db) {
+      db.exec(`ALTER TABLE cards ADD COLUMN occlusion TEXT`);
+    },
+  },
 ];
 
 export function runMigrations(db: DB): string[] {

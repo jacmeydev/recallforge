@@ -11,7 +11,7 @@ import path from 'path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { addCards, approveCards, deleteCards, listRevisions, revertRevision, searchCards, updateCard } from '@/lib/core/cards';
+import { addCards, approveCards, cardImageTexts, deleteCards, listRevisions, revertRevision, searchCards, updateCard } from '@/lib/core/cards';
 import { deleteDeck, listDecks, updateDeck } from '@/lib/core/decks';
 import { deleteDocument, getDocument, importDocumentFile, importDocumentText, listDocuments, readDocument } from '@/lib/core/documents';
 import { AppError } from '@/lib/core/errors';
@@ -65,6 +65,7 @@ Two kinds of cards:
 - Basic: front (question) and back (short answer).
 - Cloze: front is a sentence with deletions, back is optional extra notes: "La {{c1::protamina}} revierte la {{c2::heparina}}" creates one card per cN (c1 hides "protamina", c2 hides "heparina"). Hints: {{c1::protamina::antídoto}}. Use cloze for definitions, lists of features, numbers and sentences from the source; one key term per deletion; group deletions that must be recalled together under the same cN.
 - Images: add_image returns ![description](media:ID) to paste into front, back or explanation (e.g. an anatomy picture with the question "¿Qué estructura señala la flecha?").
+- Image occlusion (anatomy, histology, radiology, labelled diagrams): add_cards with occlusion: { image, regions: [{ label, left, top, width, height }] } in fractions of the image (0–1). Each region becomes a card that covers it and asks what is underneath; give every region its label (the answer). If you can see the image, place the regions over the labelled structures; otherwise ask the learner to draw them in the web app (deck page → "Oclusión de imagen").
 Quality rules (from spaced-repetition research; the server flags violations in add_cards.warnings - fix them with update_card):
 - One fact per card; the front must have exactly one correct answer and make sense on its own, months later, without the source.
 - Ask for understanding, not recognition: prefer why/how/what/which, mechanisms, causes, comparisons, "what would you expect if…" over yes/no or true/false.
@@ -166,7 +167,9 @@ export function createMcpServer(user: AuthUser): McpServer {
       annotations: { readOnlyHint: true },
     },
     ({ deck, tag, mode, format }) =>
-      withImages(user.id, () => nextCard(user.id, { deck, tag, mode, format }), (d: { card?: { front: string } | null }) => [d.card?.front])
+      withImages(user.id, () => nextCard(user.id, { deck, tag, mode, format }), (d: { card?: Parameters<typeof cardImageTexts>[0] | null }) =>
+        d.card ? cardImageTexts(d.card) : []
+      )
   );
 
   server.registerTool(
@@ -179,11 +182,7 @@ export function createMcpServer(user: AuthUser): McpServer {
       annotations: { readOnlyHint: true },
     },
     ({ card_id }) =>
-      withImages(user.id, () => revealCard(user.id, card_id), (d: { card: { front: string; back: string; explanation: string; revealed?: string } }) => [
-        d.card.revealed ?? d.card.front,
-        d.card.back,
-        d.card.explanation,
-      ])
+      withImages(user.id, () => revealCard(user.id, card_id), (d: { card: Parameters<typeof cardImageTexts>[0] }) => cardImageTexts(d.card))
   );
 
   server.registerTool(
@@ -298,6 +297,28 @@ export function createMcpServer(user: AuthUser): McpServer {
           .array(
             z.object({
               ...cardShape,
+              front: cardShape.front.optional().describe('Question or cloze text. For image occlusion: an optional heading'),
+              occlusion: z
+                .object({
+                  image: z.string().describe('The image from add_image: its markdown ![…](media:ID), "media:ID" or the id'),
+                  regions: z
+                    .array(
+                      z.object({
+                        label: z.string().optional().describe('Name of the structure under the region (the answer). Always give it.'),
+                        shape: z.enum(['rect', 'ellipse', 'polygon']).optional().describe('Default rect'),
+                        left: z.number().min(0).max(1).optional().describe('Fractions of the image width/height, 0–1'),
+                        top: z.number().min(0).max(1).optional(),
+                        width: z.number().min(0).max(1).optional(),
+                        height: z.number().min(0).max(1).optional(),
+                        points: z.array(z.tuple([z.number().min(0).max(1), z.number().min(0).max(1)])).optional().describe('polygon: [[x, y], …]'),
+                        group: z.number().int().min(1).optional().describe('Regions with the same group are asked together'),
+                      })
+                    )
+                    .min(1),
+                  hide_all: z.boolean().optional().describe('Default true: cover every region and ask one'),
+                })
+                .optional()
+                .describe('Image occlusion: one card per region, asking what structure is hidden'),
               deck: z.string().optional().describe('Overrides the default deck'),
               document_part: z.number().int().min(0).optional().describe('Index of the document part (page/slide/section) it comes from'),
             })
@@ -313,7 +334,11 @@ export function createMcpServer(user: AuthUser): McpServer {
           documentId: document_id,
           draft,
           dryRun: dry_run,
-          cards: cards.map(({ document_part, ...card }) => ({ ...card, documentPart: document_part })),
+          cards: cards.map(({ document_part, occlusion, ...card }) => ({
+            ...card,
+            documentPart: document_part,
+            ...(occlusion ? { occlusion: { image: occlusion.image, regions: occlusion.regions, hideAll: occlusion.hide_all } } : {}),
+          })),
         })
       )
   );

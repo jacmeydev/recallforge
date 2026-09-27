@@ -12,7 +12,8 @@ import { api, formatDue } from '@/lib/api/client';
 import type { CardRevision } from '@/lib/core/cards';
 import type { Card as StudyCard, DeckSummary } from '@/lib/core/types';
 import { CardSource } from './card-source';
-import { RichText } from './rich-text';
+import { OcclusionEditor } from './occlusion-editor';
+import { OcclusionImage, RichText } from './rich-text';
 
 const PAGE = 50;
 const STATE_LABEL: Record<string, string> = { new: 'nueva', learning: 'aprendiendo', relearning: 'reaprendiendo', review: 'repaso' };
@@ -58,6 +59,7 @@ export function DeckView({ deckId, initialState = '' }: { deckId: string; initia
   const [query, setQuery] = useState('');
   const [state, setState] = useState(initialState);
   const [history, setHistory] = useState<string | null>(null);
+  const [occlusionMode, setOcclusionMode] = useState(false);
   const [draft, setDraft] = useState<CardDraft>(EMPTY_DRAFT);
   const [editing, setEditing] = useState<{ id: string; draft: CardDraft } | null>(null);
   const [message, setMessage] = useState('');
@@ -239,16 +241,40 @@ export function DeckView({ deckId, initialState = '' }: { deckId: string; initia
       {message && <p className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800">{message}</p>}
 
       <Card>
-        <CardHeader className="pb-3">
+        <CardHeader className="flex-row flex-wrap items-center justify-between gap-2 pb-3">
           <CardTitle>Nueva tarjeta</CardTitle>
+          <div className="flex gap-1 text-xs">
+            {[
+              { value: false, label: 'Pregunta o cloze' },
+              { value: true, label: 'Oclusión de imagen' },
+            ].map((option) => (
+              <button
+                key={option.label}
+                className={`rounded-full border px-3 py-1 ${occlusionMode === option.value ? 'bg-primary text-primary-foreground' : 'hover:bg-accent'}`}
+                onClick={() => setOcclusionMode(option.value)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
         </CardHeader>
         <CardContent>
-          <form onSubmit={addCard} className="grid gap-3 md:grid-cols-2">
-            <CardFields draft={draft} onChange={setDraft} />
-            <div className="md:col-span-2">
-              <Button type="submit">Añadir tarjeta</Button>
-            </div>
-          </form>
+          {occlusionMode ? (
+            <OcclusionEditor
+              deck={deckId}
+              onCreated={(count) => {
+                setMessage(`${count} tarjetas de oclusión creadas`);
+                reload();
+              }}
+            />
+          ) : (
+            <form onSubmit={addCard} className="grid gap-3 md:grid-cols-2">
+              <CardFields draft={draft} onChange={setDraft} />
+              <div className="md:col-span-2">
+                <Button type="submit">Añadir tarjeta</Button>
+              </div>
+            </form>
+          )}
         </CardContent>
       </Card>
 
@@ -290,6 +316,7 @@ export function DeckView({ deckId, initialState = '' }: { deckId: string; initia
                 <div className="text-sm font-medium">
                   <RichText text={card.revealed ?? card.front} />
                   {card.cloze && <span className="text-xs font-normal text-muted-foreground">cloze c{card.cloze.ord}</span>}
+                  {card.occlusion && <OcclusionImage view={card.occlusion} revealed className="mt-1 max-w-xs" />}
                 </div>
                 <div className="text-sm">
                   <RichText text={card.cloze ? card.cloze.extra : card.back} />

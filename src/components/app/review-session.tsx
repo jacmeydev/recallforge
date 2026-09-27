@@ -9,7 +9,7 @@ import type { QuestionFormat } from '@/lib/core/formats';
 import type { GradeResult, NextCardResult, RevealResult } from '@/lib/core/study';
 import type { Rating } from '@/lib/core/types';
 import { CardSource, ExplainButton } from './card-source';
-import { RichText } from './rich-text';
+import { OcclusionImage, RichText } from './rich-text';
 
 const RATINGS: Array<{ rating: Rating; label: string; key: string; variant: 'again' | 'hard' | 'good' | 'easy' }> = [
   { rating: 'again', label: 'Otra vez', key: '1', variant: 'again' },
@@ -336,6 +336,9 @@ export function ReviewSession({ deck, tag, mode = 'normal', format = 'recall' }:
           className="text-center text-xl leading-relaxed"
           text={revealed?.card.revealed && !practice ? revealed.card.revealed : card.front}
         />
+        {(revealed?.card.occlusion ?? queue.card?.occlusion) && (
+          <OcclusionImage view={(revealed?.card.occlusion ?? queue.card?.occlusion)!} revealed={Boolean(revealed)} />
+        )}
 
         {practice ? (
           <PracticeQuestion
@@ -377,7 +380,7 @@ export function ReviewSession({ deck, tag, mode = 'normal', format = 'recall' }:
                 <p className="whitespace-pre-wrap">{answer}</p>
               </div>
             )}
-            {revealed.card.kind === 'cloze' && !practice ? null : (
+            {(revealed.card.kind === 'cloze' && !practice) || !revealed.card.back ? null : (
               <RichText className="text-center text-lg font-medium text-primary" text={revealed.card.back} />
             )}
             {revealed.card.cloze?.extra && <RichText className="text-sm" text={revealed.card.cloze.extra} />}

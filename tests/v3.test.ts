@@ -7,6 +7,7 @@ import { addCards, getCard, searchCards, updateCard } from '@/lib/core/cards';
 import { clozeAnswer, clozeOrdinals, clozeQuestion, clozeRevealed } from '@/lib/core/cloze';
 import { getDb } from '@/lib/core/db';
 import { saveMedia } from '@/lib/core/media';
+import { imageSize, parseAnkiOcclusion, toAnkiOcclusion } from '@/lib/core/occlusion';
 import { gradeCard, nextCard, revealCard } from '@/lib/core/study';
 import { renderRichText } from '@/lib/ui/rich-text';
 import { createMcpServer } from '@/lib/mcp/server';
@@ -200,5 +201,72 @@ describe('MCP Apps (study widget in the chat)', () => {
     expect(blocks.map((b) => b.type)).toEqual(['text', 'image']);
     expect(blocks[1].mimeType).toBe('image/png');
     expect(revealCard(user.id, id).card.front).toContain('media:');
+  });
+});
+
+describe('image occlusion', () => {
+  it('reads and writes Anki occlusion fields, including escapes and old pixel coordinates', () => {
+    const field =
+      '{{c1::image-occlusion:rect:left=.1:top=.2:width=.3:height=.1:oi=1}}<br>{{c2::image-occlusion:polygon:points=.6,.1 .9,.1 .75,.4:oi=1}}<br>{{c3::image-occlusion:text:text=C5\\:T1:left=.05:top=.9}}';
+    const parsed = parseAnkiOcclusion(field);
+    expect(parsed.hideAll).toBe(true);
+    expect(parsed.shapes).toEqual([
+      { ord: 1, shape: 'rect', left: 0.1, top: 0.2, width: 0.3, height: 0.1 },
+      { ord: 2, shape: 'polygon', points: [[0.6, 0.1], [0.9, 0.1], [0.75, 0.4]] },
+      { ord: 0, shape: 'text', left: 0.05, top: 0.9, label: 'C5:T1' },
+    ]);
+    expect(parseAnkiOcclusion(toAnkiOcclusion({ ...parsed }))).toEqual(parsed);
+    const pixels = parseAnkiOcclusion('{{c1::image-occlusion:rect:left=30:top=40:width=60:height=20}}', { width: 300, height: 200 });
+    expect(pixels.shapes[0]).toMatchObject({ left: 0.1, top: 0.2, width: 0.2, height: 0.1 });
+    expect(imageSize(PNG)).toEqual({ width: 1, height: 1 });
+  });
+
+  it('creates one card per region (or group), hides the answer in the question and validates the image', async () => {
+    const { user } = await createTestUser();
+    const media = saveMedia(user.id, { filename: 'plexo.png', data: PNG });
+    const res = addCards(user.id, {
+      deck: 'Anatomía',
+      cards: [
+        {
+          front: 'Plexo braquial',
+          occlusion: {
+            image: media.markdown,
+            regions: [
+              { label: 'Nervio axilar', left: 0.1, top: 0.1, width: 0.2, height: 0.1 },
+              { label: 'Nervio radial', left: 0.5, top: 0.5, width: 0.2, height: 0.1, group: 2 },
+              { label: 'Nervio radial', left: 0.5, top: 0.7, width: 0.2, height: 0.1, group: 2 },
+            ],
+          },
+        },
+      ],
+    });
+    expect(res.created).toHaveLength(2);
+    const card = getCard(user.id, res.created[0].id);
+    expect(card).toMatchObject({ kind: 'occlusion', back: 'Nervio axilar', front: 'Plexo braquial\n¿Qué hay bajo la región marcada (1)?' });
+    const question = nextCard(user.id, { deck: 'Anatomía' }).card!;
+    expect(question.occlusion?.shapes.find((s) => s.ord === question.occlusion?.ord)?.label).toBeUndefined();
+    expect(question.occlusion?.shapes.some((s) => s.label === 'Nervio radial')).toBe(true);
+    expect(getCard(user.id, res.created[1].id).back).toBe('Nervio radial');
+    expect(() => addCards(user.id, { deck: 'X', cards: [{ occlusion: { image: 'media:nope', regions: [{ left: 0, top: 0, width: 0.1, height: 0.1 }] } }] })).toThrow(/not found/);
+    expect(() => addCards(user.id, { deck: 'X', cards: [{ occlusion: { image: media.id, regions: [{ left: 0 }] } }] })).toThrow(/needs left, top/);
+  });
+
+  it('imports Anki image occlusion notes and exports them back as Anki image occlusion', async () => {
+    const { user } = await createTestUser();
+    const imported = await importApkg(user.id, path.join(DATA, 'anki-occlusion.apkg'));
+    expect(imported).toMatchObject({ cards: 3, warnings: [] });
+    const { cards } = searchCards(user.id, { limit: 10 });
+    expect(cards.every((c) => c.kind === 'occlusion' && c.occlusion?.hideAll)).toBe(true);
+    expect(cards.map((c) => c.occlusion?.ord).sort()).toEqual([1, 2, 3]);
+    expect(cards[0].occlusion?.shapes.map((s) => s.shape).sort()).toEqual(['ellipse', 'polygon', 'rect', 'rect']);
+    expect(cards[0].explanation).toBe('');
+    expect(cards.find((c) => c.occlusion?.ord === 1)?.back).toBe('Raíces C5-T1');
+
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'rf-io-')), 'io.apkg');
+    fs.writeFileSync(file, await exportApkg(user.id));
+    useFreshDatabase();
+    const { user: other } = await createTestUser();
+    expect((await importApkg(other.id, file)).cards).toBe(3);
+    expect(searchCards(other.id, { limit: 10 }).cards.every((c) => c.kind === 'occlusion')).toBe(true);
   });
 });
