@@ -100,7 +100,7 @@ También puedes pedirle:
 
 **Claude Desktop (un clic):** descarga `recallforge.mcpb` de la [última versión](https://github.com/jacmeydev/recallforge/releases/latest) y ábrelo; Claude Desktop lo instala como extensión (Ajustes → Extensiones). No necesitas instalar nada más: funciona en macOS, Windows y Linux.
 
-**Cualquier otro agente (Claude Code, Codex, Cursor, VS Code, Windsurf…):** con [Node.js](https://nodejs.org) 20 o superior instalado, basta con una línea de configuración (ver abajo): `npx` descarga RecallForge la primera vez.
+**Cualquier otro agente (Claude Code, Codex, Cursor, VS Code, Windsurf…):** con [Node.js](https://nodejs.org) 20 o superior instalado, basta con una línea de configuración (ver abajo): `npx` descarga RecallForge la primera vez. *(Disponible cuando el paquete se publique en npm; mientras tanto, instala desde el código.)*
 
 **Desde el código** (para la web local y para desarrollar):
 
@@ -448,7 +448,7 @@ skills/           skill para agentes
 tests/            pruebas
 ```
 
-**Publicar una versión**: sube la versión en `package.json` y crea la etiqueta (`git tag v3.0.0 && git push origin v3.0.0`). GitHub Actions crea la *release* con `recallforge.mcpb` y, si el repositorio tiene el secreto `NPM_TOKEN`, publica el paquete `recallforge` en npm.
+**Publicar una versión**: sube la versión en `package.json` y crea la etiqueta (`git tag v3.0.1 && git push origin v3.0.1`) o ejecuta a mano el flujo *Release* en la pestaña *Actions* de GitHub. Crea la *release* con `recallforge.mcpb` y, si el repositorio tiene el secreto `NPM_TOKEN`, publica el paquete `recallforge` en npm.
 
 Tecnologías: Node.js, TypeScript, SQLite (better-sqlite3), ts-fsrs, MCP TypeScript SDK, Next.js 16, React 19, Tailwind y Vitest.
 

@@ -1,11 +1,12 @@
 name: "Release"
 
-# Push a tag like v3.0.0 to publish:
+# Publish a version (push a tag like v3.0.0, or run this workflow by hand from the Actions tab):
 #   - a GitHub Release with recallforge.mcpb (one-click install in Claude Desktop)
 #   - the npm package "recallforge" (npx recallforge mcp), when the NPM_TOKEN secret is set
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -30,8 +31,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/recallforge.mcpb \
-            --title "RecallForge $GITHUB_REF_NAME" \
+          # Run by hand: the version comes from package.json and the tag is created on this commit.
+          TAG="$GITHUB_REF_NAME"
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then TAG="v$(node -p "require('./package.json').version")"; fi
+          gh release create "$TAG" dist/recallforge.mcpb --target "$GITHUB_SHA" \
+            --title "RecallForge $TAG" \
             --notes "Descarga **recallforge.mcpb** y ábrelo con Claude Desktop (Ajustes → Extensiones) para instalar RecallForge con un clic. Otros agentes: \`npx -y recallforge mcp\`. Novedades en el README."
 
       - name: Publish to npm
