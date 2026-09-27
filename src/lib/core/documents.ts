@@ -8,6 +8,7 @@
 
 import { z } from 'zod';
 import { genId, getDb, nowIso } from './db';
+import { saveMedia } from './media';
 import { getOrCreateDeck, resolveDeck } from './decks';
 import { badRequest, notFound } from './errors';
 import { extractDocument, splitText, type DocumentPartInput } from './extract';
@@ -97,7 +98,20 @@ function saveDocument(
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(id, userId, input.title, input.filename, input.mimeType, deckId, input.parts.length, chars, now, now);
     const insertPart = db.prepare(`INSERT INTO document_parts (document_id, idx, label, text) VALUES (?, ?, ?, ?)`);
-    input.parts.forEach((part, idx) => insertPart.run(id, idx, part.label, part.text));
+    const insertImage = db.prepare(
+      `INSERT OR IGNORE INTO document_images (document_id, part, position, media_id, width, height) VALUES (?, ?, ?, ?, ?, ?)`
+    );
+    input.parts.forEach((part, idx) => {
+      insertPart.run(id, idx, part.label, part.text);
+      (part.images ?? []).forEach((image, position) => {
+        try {
+          const media = saveMedia(userId, { filename: image.filename, data: image.data });
+          insertImage.run(id, idx, position, media.id, image.width ?? null, image.height ?? null);
+        } catch {
+          // Formats browsers cannot show (EMF, TIFF…) are skipped.
+        }
+      });
+    });
   })();
   return toSummary(getDocumentRow(userId, id));
 }
@@ -148,9 +162,41 @@ export interface DocumentPartSummary {
   chars: number;
   /** Cards (active + drafts) created from this part. */
   cards: number;
+  /** Figures of this part (diagrams, anatomy, micrographs…). */
+  images?: DocumentImage[];
 }
 
 /** Document metadata plus an outline of its parts with card coverage. */
+export interface DocumentImage {
+  id: string;
+  /** Paste into a card, or use as the image of an occlusion card. */
+  markdown: string;
+  width: number | null;
+  height: number | null;
+}
+
+/** Figures of each part of a document. */
+function partImages(documentId: string): Map<number, DocumentImage[]> {
+  const rows = getDb()
+    .prepare(
+      `SELECT i.part, i.media_id, i.width, i.height, m.filename FROM document_images i JOIN media m ON m.id = i.media_id
+       WHERE i.document_id = ? ORDER BY i.part, i.position`
+    )
+    .all(documentId) as Array<{ part: number; media_id: string; width: number | null; height: number | null; filename: string }>;
+  const byPart = new Map<number, DocumentImage[]>();
+  for (const row of rows) {
+    const list = byPart.get(row.part) ?? [];
+    list.push({
+      id: row.media_id,
+      markdown: `![${row.filename.replace(/\.[a-z0-9]+$/i, '')}](media:${row.media_id})`,
+      width: row.width,
+      height: row.height,
+    });
+    byPart.set(row.part, list);
+  }
+  return byPart;
+}
+
 export function getDocument(userId: string, id: string): DocumentSummary & { outline: DocumentPartSummary[] } {
   const document = toSummary(getDocumentRow(userId, id));
   const outline = getDb()
@@ -160,7 +206,8 @@ export function getDocument(userId: string, id: string): DocumentSummary & { out
        FROM document_parts p WHERE p.document_id = ? ORDER BY p.idx`
     )
     .all(id) as DocumentPartSummary[];
-  return { ...document, outline };
+  const images = partImages(id);
+  return { ...document, outline: outline.map((part) => ({ ...part, images: images.get(part.index) ?? [] })) };
 }
 
 export interface ReadDocumentResult {
@@ -195,9 +242,10 @@ export function readDocument(userId: string, id: string, input: unknown = {}): R
     parts.push(row);
     used += row.chars;
   }
+  const images = partImages(id);
   return {
     document: { id: document.id, title: document.title, parts: document.parts, deck: document.deck_name },
-    parts,
+    parts: parts.map((part) => ({ ...part, images: images.get(part.index) ?? [] })),
     nextPart,
   };
 }

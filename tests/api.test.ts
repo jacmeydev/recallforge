@@ -238,6 +238,7 @@ describe('MCP endpoint', () => {
       'delete_document',
       'explain_card',
       'export_data',
+      'get_image',
       'get_next_card',
       'get_progress_map',
       'get_stats',

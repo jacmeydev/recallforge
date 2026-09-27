@@ -6,6 +6,7 @@ import { exportApkg, importApkg, ankiHtmlToText, renderAnkiTemplate } from '@/li
 import { addCards, getCard, searchCards, updateCard } from '@/lib/core/cards';
 import { clozeAnswer, clozeOrdinals, clozeQuestion, clozeRevealed } from '@/lib/core/cloze';
 import { getDb } from '@/lib/core/db';
+import { importDocumentFile, readDocument, getDocument } from '@/lib/core/documents';
 import { saveMedia } from '@/lib/core/media';
 import { imageSize, parseAnkiOcclusion, toAnkiOcclusion } from '@/lib/core/occlusion';
 import { gradeCard, nextCard, revealCard } from '@/lib/core/study';
@@ -268,5 +269,47 @@ describe('image occlusion', () => {
     const { user: other } = await createTestUser();
     expect((await importApkg(other.id, file)).cards).toBe(3);
     expect(searchCards(other.id, { limit: 10 }).cards.every((c) => c.kind === 'occlusion')).toBe(true);
+  });
+});
+
+describe('figures in documents', () => {
+  for (const [file, label] of [
+    ['figs.pdf', 'p. 1'],
+    ['figs.pptx', 'diapositiva 1'],
+    ['figs.docx', 'Histologia'],
+  ]) {
+    it(`extracts the figures of ${file} into the right part and skips icons`, async () => {
+      const { user } = await createTestUser();
+      const doc = await importDocumentFile(user.id, { filename: file, data: fs.readFileSync(path.join(DATA, file)) });
+      const { parts } = readDocument(user.id, doc.id);
+      const withFigure = parts.find((p) => p.label === label)!;
+      expect(withFigure.images).toHaveLength(1);
+      expect(withFigure.images![0]).toMatchObject({ width: 400, height: 300 });
+      expect(withFigure.images![0].markdown).toMatch(/^!\[.*\]\(media:[\w-]+\)$/);
+      expect(parts.filter((p) => p.label !== label).every((p) => (p.images ?? []).length === 0)).toBe(true);
+      expect(getDocument(user.id, doc.id).outline.find((p) => p.label === label)?.images).toHaveLength(1);
+
+      // A figure can become an image occlusion card linked to its page.
+      const res = addCards(user.id, {
+        deck: 'Histología',
+        documentId: doc.id,
+        cards: [{ documentPart: withFigure.index, occlusion: { image: withFigure.images![0].markdown, regions: [{ label: 'Núcleo', left: 0.4, top: 0.4, width: 0.2, height: 0.2 }] } }],
+      });
+      expect(getCard(user.id, res.created[0].id)).toMatchObject({ kind: 'occlusion', back: 'Núcleo', document: { id: doc.id, part: withFigure.index } });
+    });
+  }
+
+  it('lets agents look at a figure', async () => {
+    const user = getLocalUser();
+    const server = createMcpServer(user);
+    const client = new Client({ name: 'host', version: '1' });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(a), client.connect(b)]);
+    const doc = await importDocumentFile(user.id, { filename: 'figs.pdf', data: fs.readFileSync(path.join(DATA, 'figs.pdf')) });
+    const figure = readDocument(user.id, doc.id).parts[0].images![0];
+    const res = await client.callTool({ name: 'get_image', arguments: { image: figure.markdown } });
+    const blocks = res.content as Array<{ type: string; text?: string; mimeType?: string }>;
+    expect(JSON.parse(blocks[0].text!)).toMatchObject({ width: 400, height: 300 });
+    expect(blocks[1]).toMatchObject({ type: 'image', mimeType: 'image/png' });
   });
 });

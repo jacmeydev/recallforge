@@ -219,6 +219,23 @@ const MIGRATIONS: Migration[] = [
       db.exec(`ALTER TABLE cards ADD COLUMN occlusion TEXT`);
     },
   },
+  {
+    // Figures found in documents (PDF pages, slides, Word sections), stored as media.
+    id: '2026_09_document_images',
+    up(db) {
+      db.exec(`
+        CREATE TABLE document_images (
+          document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+          part INTEGER NOT NULL,
+          position INTEGER NOT NULL,
+          media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+          width INTEGER,
+          height INTEGER,
+          PRIMARY KEY (document_id, part, position)
+        );
+      `);
+    },
+  },
 ];
 
 export function runMigrations(db: DB): string[] {

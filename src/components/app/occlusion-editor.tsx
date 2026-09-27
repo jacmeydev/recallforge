@@ -21,8 +21,22 @@ const round = (value: number) => Math.round(value * 10000) / 10000;
  * Image occlusion editor: upload an image, drag to draw the regions to hide,
  * name each structure. One card per region (or per group of regions).
  */
-export function OcclusionEditor({ deck, onCreated }: { deck: string; onCreated: (count: number) => void }) {
-  const [image, setImage] = useState<{ id: string; url: string } | null>(null);
+export function OcclusionEditor({
+  deck,
+  onCreated,
+  initialImage,
+  source,
+}: {
+  deck: string;
+  onCreated: (count: number) => void;
+  /** Start from an image already stored (e.g. a figure of a document). */
+  initialImage?: string;
+  /** Link the cards to the document page they come from. */
+  source?: { documentId: string; documentPart: number };
+}) {
+  const [image, setImage] = useState<{ id: string; url: string } | null>(
+    initialImage ? { id: initialImage, url: `/api/v1/media/${initialImage}` } : null
+  );
   const [regions, setRegions] = useState<Region[]>([]);
   const [drawing, setDrawing] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [header, setHeader] = useState('');
@@ -65,9 +79,11 @@ export function OcclusionEditor({ deck, onCreated }: { deck: string; onCreated: 
         method: 'POST',
         body: {
           deck,
+          ...(source ? { documentId: source.documentId } : {}),
           cards: [
             {
               front: header.trim(),
+              ...(source ? { documentPart: source.documentPart } : {}),
               back: extra.trim() || undefined,
               occlusion: {
                 image: image.id,

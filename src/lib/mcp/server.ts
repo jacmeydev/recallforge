@@ -20,7 +20,8 @@ import { exportApkg, importApkg } from '@/lib/core/anki';
 import { exportCardsTsv, exportUserData } from '@/lib/core/export';
 import { importData } from '@/lib/core/import';
 import { optimizeScheduler } from '@/lib/core/optimizer';
-import { mediaPayload, saveMedia } from '@/lib/core/media';
+import { getMedia, mediaPayload, saveMedia } from '@/lib/core/media';
+import { imageSize } from '@/lib/core/occlusion';
 import { registerStudyApp } from './apps';
 import { updateSettings } from '@/lib/core/settings';
 import { getStats } from '@/lib/core/stats';
@@ -83,7 +84,8 @@ ORGANIZATION
 
 FROM A DOCUMENT (PDF, slides, notes, a web page…)
 1. If you can read the file yourself, call add_document with its title and full text (or content_base64 + filename for PDF/DOCX/PPTX files), and a deck for the subject. Otherwise ask the learner to upload it in the RecallForge web app and use list_documents.
-2. read_document part by part (follow nextPart). Each part is a page, slide or section with the number of cards already made from it; skip parts that are already covered unless asked.
+2. read_document part by part (follow nextPart). Each part is a page, slide or section with the number of cards already made from it, and its figures (images: diagrams, anatomy, micrographs, radiographs); skip parts that are already covered unless asked.
+   Figures: look at them with get_image. A labelled diagram or anatomical image is ideal for an image occlusion card (add_cards with occlusion, one region per label, using the figure's markdown as image); other useful figures can go in front or explanation of a basic card.
 3. For each part, write cards following the quality rules and send them with add_cards using document_id, document_part and draft: true. The source is filled in automatically.
 4. Tell the learner how many drafts were created per section and ask them to review: they can edit and approve in the web app ("Por revisar"), or you can show them and call approve_cards. Never approve on your own.
 
@@ -405,7 +407,7 @@ export function createMcpServer(user: AuthUser): McpServer {
     {
       title: 'Read document',
       description:
-        'Read consecutive parts (pages, slides or sections) of a document, each with its index, label and how many cards already come from it. Continue with from_part = nextPart until it is null. Use outline_only to see the structure and coverage without the text.',
+        'Read consecutive parts (pages, slides or sections) of a document, each with its index, label, how many cards already come from it and its figures (images, see get_image). Continue with from_part = nextPart until it is null. Use outline_only to see the structure and coverage without the text.',
       inputSchema: {
         document_id: z.string(),
         from_part: z.number().int().min(0).optional(),
@@ -519,6 +521,30 @@ export function createMcpServer(user: AuthUser): McpServer {
       },
     },
     ({ content_base64, filename }) => run(() => ({ media: saveMedia(user.id, { filename, data: new Uint8Array(Buffer.from(content_base64, 'base64')) }) }))
+  );
+
+  server.registerTool(
+    'get_image',
+    {
+      title: 'Look at an image',
+      description:
+        'See a stored image (a figure of a document from read_document, or an image of a card). Use it to write accurate cards about a diagram, to decide whether it deserves an image occlusion card, and to place the occlusion regions over the labelled structures.',
+      inputSchema: { image: z.string().describe('The image id, "media:ID" or its ![…](media:ID) markdown') },
+      annotations: { readOnlyHint: true },
+    },
+    ({ image }) =>
+      run(() => {
+        const id = /media:([A-Za-z0-9-]+)/.exec(image)?.[1] ?? image.trim();
+        const media = getMedia(user.id, id);
+        const size = imageSize(media.data);
+        return { id, filename: media.filename, mimeType: media.mimeType, width: size?.width ?? null, height: size?.height ?? null };
+      }).then((result) => {
+        if (result.isError) return result;
+        const { id } = JSON.parse((result.content[0] as { text: string }).text) as { id: string };
+        const media = getMedia(user.id, id);
+        if (!media.mimeType.startsWith('image/') || media.mimeType === 'image/svg+xml') return result;
+        return { content: [...result.content, { type: 'image' as const, data: media.data.toString('base64'), mimeType: media.mimeType }] };
+      })
   );
 
   server.registerTool(
